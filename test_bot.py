@@ -712,7 +712,9 @@ check("rpc: primary 403 -> fallback still returns costOf(10)",
 # --- M: do_mint retries with a fresh expected_start --------------------
 # The pool moves fast and the contract checks expected_start, so a
 # preview built on a stale start reverts (baw 351805). do_mint must
-# re-read totalMinted and retry once with the fresh start.
+# re-read totalMinted and retry with a fresh start aimed ahead by
+# MINT_START_BUFFER, to land where totalMinted will be when the slow
+# baw preview simulates.
 _real_preview = baw_users.preview
 _real_total = baw_users.total_minted
 _real_execute = baw_users.execute
@@ -742,15 +744,16 @@ finally:
 check("mint: stale start -> do_mint retries once and succeeds",
       _res.get("tx_hash") == "0xfreshmint" and len(_preview_calls) == 2,
       str(_preview_calls))
-# The retry calldata must encode the fresh start (300001), not the
-# stale one (200000). Decode the 4th uint256 arg (expected_start).
+# The retry calldata must encode the fresh start aimed ahead by the
+# buffer: 300000 + 1 + MINT_START_BUFFER, not the stale 200000.
 from eth_abi import decode as _dec
 _retry_data = _preview_calls[1]
 _retry_args = _dec(["uint256", "address", "uint256", "uint256",
                    "uint256", "uint256"],
                   bytes.fromhex(_retry_data[10:]))
-check("mint: retry calldata uses fresh expected_start 300001",
-      _retry_args[3] == 300001 and _retry_args[0] == 5,
+check("mint: retry calldata uses fresh expected_start + buffer",
+      _retry_args[3] == 300000 + 1 + baw_users.MINT_START_BUFFER
+      and _retry_args[0] == 5,
       str(_retry_args))
 
 print()

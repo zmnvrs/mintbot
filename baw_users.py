@@ -345,31 +345,41 @@ def _rpc(method, params):
 
     Tries the primary BSC_RPC first, then each fallback. An endpoint
     that returns non-JSON (e.g. a 403 HTML page), an RPC error, or a
-    timeout is skipped and the next one is tried. Returns the result
-    field of the first good response. Raises BawError only when every
-    endpoint failed.
+    timeout is skipped and the next one is tried. A rate-limit error
+    (-32005/-32001/-32003/-32012) gets one quick retry on the same
+    endpoint after a short pause, since the public endpoints throttle
+    in bursts. Returns the result field of the first good response.
+    Raises BawError only when every endpoint failed.
     """
+    import time as _time
     endpoints = [BSC_RPC] + [u for u in BSC_RPC_FALLBACKS if u != BSC_RPC]
     last_err = "no endpoint tried"
     for url in endpoints:
-        try:
-            resp = requests.post(
-                url,
-                json={"jsonrpc": "2.0", "method": method,
-                      "params": params, "id": 1},
-                timeout=15,
-                headers={"User-Agent": "Mozilla/5.0"})
-            res = resp.json()
-        except Exception as exc:
-            last_err = "{}: {}".format(url, exc)
-            continue
-        if "error" in res:
-            last_err = "{}: {}".format(url, res["error"])
-            continue
-        if "result" not in res:
-            last_err = "{}: no result in response".format(url)
-            continue
-        return res["result"]
+        for attempt in (0, 1):
+            try:
+                resp = requests.post(
+                    url,
+                    json={"jsonrpc": "2.0", "method": method,
+                          "params": params, "id": 1},
+                    timeout=15,
+                    headers={"User-Agent": "Mozilla/5.0"})
+                res = resp.json()
+            except Exception as exc:
+                last_err = "{}: {}".format(url, exc)
+                break
+            if "error" in res:
+                err = res["error"]
+                code = err.get("code") if isinstance(err, dict) else None
+                last_err = "{}: {}".format(url, err)
+                # Rate-limit errors are transient — retry once briefly.
+                if code in (-32005, -32001, -32003, -32012) and attempt == 0:
+                    _time.sleep(1.5)
+                    continue
+                break
+            if "result" not in res:
+                last_err = "{}: no result in response".format(url)
+                break
+            return res["result"]
     raise BawError("BSC RPC unreachable: {}".format(last_err))
 
 
@@ -502,16 +512,29 @@ def mint_calldata(qty, max_cost_wei, expected_start, deadline):
         [qty, REFERRER_W1, max_cost_wei, expected_start, 0, deadline])
 
 
+# How far ahead of the live totalMinted to aim expected_start.
+# The contract wants expected_start == totalMinted + 1 at the moment
+# the transaction is simulated, but a baw preview takes ~5 seconds
+# and the pool mints ~2-3 shares/second, so a start read as total+1
+# is already ~10 shares stale by simulation time (baw 351805).
+# Aiming ~12 shares ahead lands the start where totalMinted will be
+# when the preview simulates.
+MINT_START_BUFFER = 12
+# Preview attempts per mint (each with a fresh total read).
+MINT_PREVIEW_ATTEMPTS = 4
+
+
 def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
     """Preview + execute one mint. Returns {"tx_hash", "status"}.
 
-    The pool moves fast — totalMinted rises every second — and the
-    contract checks expected_start, so a preview built on a stale
-    start reverts (baw error 351805). On a preview failure, re-read
-    totalMinted fresh and retry once with the new expected_start
-    (+ an explicit gas limit, since baw can also under-estimate gas).
-    The retry mints the same number of shares, just starting at the
-    live index. Raises BawError on any failure — callers report it.
+    The pool moves fast and the contract checks expected_start, so a
+    preview built on a stale start reverts (baw error 351805). Each
+    attempt re-reads totalMinted fresh and aims expected_start ahead
+    by MINT_START_BUFFER, to land where totalMinted will be when the
+    slow (~5s) baw preview simulates. Retries up to
+    MINT_PREVIEW_ATTEMPTS times, with an explicit gas limit (baw can
+    under-estimate gas). The retry mints the same number of shares,
+    just starting at the live index. Raises BawError on any failure.
     """
     def _attempt(start, gas_limit=None):
         deadline = int(time.time()) + 600
@@ -523,13 +546,19 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
                            "Not minting.".format(prev.get("status") or "unknown"))
         return prev
 
-    try:
-        prev = _attempt(expected_start)
-    except BawError:
-        # Stale expected_start (or a gas-estimate miss) — re-read the
-        # live total and retry once with the fresh start.
-        fresh_total = total_minted()
-        prev = _attempt(fresh_total + 1, gas_limit=400000)
+    last_err = None
+    for attempt in range(MINT_PREVIEW_ATTEMPTS):
+        try:
+            fresh_total = total_minted()
+            start = fresh_total + 1 + MINT_START_BUFFER
+            prev = _attempt(start, gas_limit=400000)
+            break
+        except BawError as exc:
+            last_err = exc
+            continue
+    else:
+        raise BawError("mint preview failed after {} attempts: {}"
+                       .format(MINT_PREVIEW_ATTEMPTS, last_err))
     result = execute(home, prev["request_id"])
     if not result.get("tx_hash"):
         raise BawError(
