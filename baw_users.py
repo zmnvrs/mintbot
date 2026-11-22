@@ -505,20 +505,31 @@ def mint_calldata(qty, max_cost_wei, expected_start, deadline):
 def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
     """Preview + execute one mint. Returns {"tx_hash", "status"}.
 
-    Retries the preview once with an explicit gas limit if the first
-    preview fails (baw gas estimation can under-estimate).
-    Raises BawError on any failure — callers report it plainly.
+    The pool moves fast — totalMinted rises every second — and the
+    contract checks expected_start, so a preview built on a stale
+    start reverts (baw error 351805). On a preview failure, re-read
+    totalMinted fresh and retry once with the new expected_start
+    (+ an explicit gas limit, since baw can also under-estimate gas).
+    The retry mints the same number of shares, just starting at the
+    live index. Raises BawError on any failure — callers report it.
     """
-    deadline = int(time.time()) + 600
-    data = mint_calldata(qty, max_cost_wei, expected_start, deadline)
-    try:
-        prev = preview(home, from_addr, MINT_CONTRACT, max_cost_wei, data)
-    except BawError:
+    def _attempt(start, gas_limit=None):
+        deadline = int(time.time()) + 600
+        data = mint_calldata(qty, max_cost_wei, start, deadline)
         prev = preview(home, from_addr, MINT_CONTRACT, max_cost_wei, data,
-                       gas_limit=400000)
-    if not preview_is_clean(prev):
-        raise BawError("mint preview not clean (status: {}). "
-                       "Not minting.".format(prev.get("status") or "unknown"))
+                       gas_limit=gas_limit)
+        if not preview_is_clean(prev):
+            raise BawError("mint preview not clean (status: {}). "
+                           "Not minting.".format(prev.get("status") or "unknown"))
+        return prev
+
+    try:
+        prev = _attempt(expected_start)
+    except BawError:
+        # Stale expected_start (or a gas-estimate miss) — re-read the
+        # live total and retry once with the fresh start.
+        fresh_total = total_minted()
+        prev = _attempt(fresh_total + 1, gas_limit=400000)
     result = execute(home, prev["request_id"])
     if not result.get("tx_hash"):
         raise BawError(

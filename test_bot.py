@@ -709,6 +709,50 @@ finally:
 check("rpc: primary 403 -> fallback still returns costOf(10)",
       _cost == 12345, str(_cost))
 
+# --- M: do_mint retries with a fresh expected_start --------------------
+# The pool moves fast and the contract checks expected_start, so a
+# preview built on a stale start reverts (baw 351805). do_mint must
+# re-read totalMinted and retry once with the fresh start.
+_real_preview = baw_users.preview
+_real_total = baw_users.total_minted
+_real_execute = baw_users.execute
+_preview_calls = []
+
+
+def _preview_fail_once(home, from_addr, to, value_wei, input_data,
+                       gas_limit=None):
+    _preview_calls.append(input_data)
+    if len(_preview_calls) == 1:
+        raise baw_users.BawError(
+            "baw error 351805: Transaction simulation failed")
+    return {"request_id": "req-fresh", "status": "OK", "raw": {}}
+
+
+baw_users.preview = _preview_fail_once
+baw_users.total_minted = lambda: 300000  # fresh total at retry time
+baw_users.execute = lambda home, req_id: {"tx_hash": "0xfreshmint",
+                                          "status": "OK"}
+try:
+    _res = baw_users.do_mint("/tmp/home", "0xUser", 5, 39 * 10 ** 15,
+                             200000)
+finally:
+    baw_users.preview = _real_preview
+    baw_users.total_minted = _real_total
+    baw_users.execute = _real_execute
+check("mint: stale start -> do_mint retries once and succeeds",
+      _res.get("tx_hash") == "0xfreshmint" and len(_preview_calls) == 2,
+      str(_preview_calls))
+# The retry calldata must encode the fresh start (300001), not the
+# stale one (200000). Decode the 4th uint256 arg (expected_start).
+from eth_abi import decode as _dec
+_retry_data = _preview_calls[1]
+_retry_args = _dec(["uint256", "address", "uint256", "uint256",
+                   "uint256", "uint256"],
+                  bytes.fromhex(_retry_data[10:]))
+check("mint: retry calldata uses fresh expected_start 300001",
+      _retry_args[3] == 300001 and _retry_args[0] == 5,
+      str(_retry_args))
+
 print()
 if FAILURES:
     print("FAILED: {}".format(", ".join(FAILURES)))
