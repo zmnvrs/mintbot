@@ -785,6 +785,35 @@ check("mint: retry maxCost == value == exact fresh cost (no padding)",
       and _retry_value == (39 * 10 ** 15),
       str((_retry_args[2], _retry_value)))
 
+# M2: execute with no tx hash (PENDING_CONFIRMATION) waits for the
+# Binance-app approval instead of failing: paidOnce flipping True
+# means the mint landed, and do_mint returns confirmed-in-app with
+# tx_hash None (the sell then runs off the AI balance).
+_real_wait = baw_users._wait_for_paid_once
+_real_execute2 = baw_users.execute
+baw_users.preview = lambda *a, **k: {"request_id": "req-app",
+                                     "status": "OK", "raw": {}}
+baw_users.total_minted = lambda: 300000
+baw_users.cost_of = lambda qty: 39 * 10 ** 15
+baw_users.simulate_mint = lambda *a, **k: (True, "")
+baw_users.execute = lambda home, req_id: {"tx_hash": None,
+                                         "status": "PENDING_CONFIRMATION"}
+baw_users._wait_for_paid_once = lambda addr, timeout=300: True
+try:
+    _res2 = baw_users.do_mint("/tmp/home", "0xUser", 5, 39 * 10 ** 15,
+                              200000)
+finally:
+    baw_users.preview = _real_preview
+    baw_users.total_minted = _real_total
+    baw_users.cost_of = _real_cost
+    baw_users.simulate_mint = _real_simulate
+    baw_users.execute = _real_execute2
+    baw_users._wait_for_paid_once = _real_wait
+check("mint: no tx hash + paidOnce flips -> confirmed-in-app, tx None",
+      _res2.get("status") == "confirmed-in-app"
+      and _res2.get("tx_hash") is None,
+      str(_res2))
+
 # --- N: slots + mini app (direct WalletConnect mint) --------------------
 # N1: slots_left math (TOTAL_SHARES - totalMinted), clamped at 0.
 bot, baw_users = load_bot(BASE_ENV)

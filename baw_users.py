@@ -654,6 +654,26 @@ def simulate_mint(from_addr, qty, cost_wei, start):
     return None, last  # could not simulate; do not block
 
 
+def _wait_for_paid_once(address, timeout=300):
+    """Poll paidOnce on-chain until it flips True or timeout passes.
+
+    Used when baw execute returns no tx hash: the mint is waiting for
+    the user to approve it in the Binance app (PENDING_CONFIRMATION).
+    The other bot waits the same way instead of failing. Returns True
+    if paidOnce flipped True (mint landed), False on timeout. A chain
+    read error is treated as "not yet" and retried until timeout.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            if paid_once(address):
+                return True
+        except BawError:
+            pass
+        time.sleep(10)
+    return False
+
+
 # Keep trying for this long (official rule: up to 30 minutes on
 # BadStart). Each failed attempt only costs time — nothing is sent.
 MINT_RETRY_SECONDS = 900
@@ -751,6 +771,16 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
                 continue
             raise BawError(last_err)
         if not result.get("tx_hash"):
+            # No tx hash yet: the mint is waiting for the user to
+            # approve it in the Binance app (PENDING_CONFIRMATION).
+            # Do NOT fail — wait for the approval like the other bot
+            # does. Poll paidOnce on-chain; if it flips True, the mint
+            # landed (user approved) and the sell can proceed from the
+            # AI balance even without the tx hash.
+            if _wait_for_paid_once(from_addr, timeout=300):
+                return {"tx_hash": None,
+                        "status": "confirmed-in-app",
+                        "raw": result.get("raw", {})}
             raise BawError(
                 "mint execute returned no tx hash (status: {}). The mint "
                 "may need confirmation in the Binance app — check status "

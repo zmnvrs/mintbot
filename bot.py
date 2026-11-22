@@ -904,7 +904,9 @@ def handle_mint_confirm(chat_id, user_id, qty):
                                    _fmt_bnb(bnb_wei)),
                      main_keyboard())
         return
-    send_message(chat_id, "⏳ Mint করা হচ্ছে...")
+    send_message(chat_id,
+                 "⏳ Mint করা হচ্ছে...\n"
+                 "Binance app-এ approve করুন।")
     try:
         ai_before = baw_users.token_balance(baw_users.AI_TOKEN, address)
         bnb_before = baw_users.eth_get_balance(address)
@@ -917,7 +919,11 @@ def handle_mint_confirm(chat_id, user_id, qty):
             "Mint failed: {}\n\nNothing was sent.".format(exc),
             main_keyboard())
         return
-    mint_tx = result["tx_hash"]
+    mint_tx = result.get("tx_hash")
+    tx_line = ("Tx: {}\n{}".format(mint_tx, BSCSCAN_TX.format(mint_tx))
+               if mint_tx else
+               "Tx: Binance app-এ approve করা হয়েছে (hash ধরা যায়নি) — "
+               "Check status-এ দেখুন।")
     record.pop("pending_mint", None)
     record["minted_count"] = int(record.get("minted_count", 0)) + 1
     record["total_shares"] = int(record.get("total_shares", 0)) + qty
@@ -956,12 +962,10 @@ def handle_mint_confirm(chat_id, user_id, qty):
         chat_id,
         "✅ Mint সফল!\n\n"
         "Shares: {} (মোট আপনার: {})\n"
-        "Tx: {}\n"
         "{}\n\n"
         "{}\n\n"
         "Claim $3 চাপুন — আপনার one-time reward নিন।".format(
-            qty, record["total_shares"], mint_tx,
-            BSCSCAN_TX.format(mint_tx), "\n".join(sell_lines)),
+            qty, record["total_shares"], tx_line, "\n".join(sell_lines)),
         main_keyboard())
 
 
