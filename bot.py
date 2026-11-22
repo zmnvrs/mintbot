@@ -91,6 +91,7 @@ MIN_BNB_USD = _env_float("MIN_BNB_USD", 41)
 TASK_CHANNELS = [c.strip() for c in os.environ.get("TASK_CHANNELS", "").split(",") if c.strip()]
 CHANNEL_INVITE_URL = os.environ.get("CHANNEL_INVITE_URL", "").strip()
 OWNER_CONTACT = os.environ.get("OWNER_CONTACT", "").strip()
+ADMIN_CONTACT = os.environ.get("ADMIN_CONTACT", "").strip()
 REWARD_TEXT = os.environ.get("REWARD_TEXT", "$3 per account").strip()
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").strip()
 BSC_RPC = os.environ.get("BSC_RPC", "https://bsc-dataseed.bnbchain.org").strip()
@@ -215,16 +216,22 @@ def main_keyboard():
 
 
 def help_keyboard():
-    """Help keyboard: the main menu plus a Message Owner button.
+    """Help keyboard: the main menu plus Owner + Admin contact buttons.
 
-    Tapping it opens a chat with the owner (@imzaman7) in Telegram,
-    so users can message the owner directly for help.
+    Tapping one opens a chat with that person in Telegram, so users
+    can message the owner or the admin directly for help.
     """
     rows = []
+    contacts = []
     if OWNER_CONTACT:
-        handle = OWNER_CONTACT.lstrip("@")
-        rows.append([{"text": _bold("💬 Message Owner ({})".format(
-            OWNER_CONTACT)), "url": "https://t.me/{}".format(handle)}])
+        contacts.append(("👤 Owner ({})".format(OWNER_CONTACT),
+                         OWNER_CONTACT))
+    if ADMIN_CONTACT:
+        contacts.append(("🛡 Admin ({})".format(ADMIN_CONTACT),
+                         ADMIN_CONTACT))
+    for label, handle in contacts:
+        rows.append([{"text": _bold("💬 {}".format(label)),
+                      "url": "https://t.me/{}".format(handle.lstrip("@"))}])
     rows.extend(main_keyboard()["inline_keyboard"])
     return {"inline_keyboard": rows}
 
@@ -268,14 +275,15 @@ def help_text():
         "4️⃣ 🎁 <b>Claim $3</b> — after your first mint through the bot, "
         "one $3 USDT claim per account.\n\n"
         "5️⃣ 🚫 <b>Disconnect</b> — unpairs your wallet from the bot.\n\n"
-        "💬 <b>Need help?</b> Tap the Message Owner button below to "
-        "message the owner ({}) directly.\n\n"
+        "💬 <b>Need help?</b> Tap a button below to message the owner "
+        "({}) or the admin ({}) directly.\n\n"
         "⚠️ You need: a .ai Agent ID in your wallet, enough BNB for the "
         "mint cost + gas, and Developer Mode ON in your Agentic "
         "Wallet settings (Binance app → Agentic Wallet → Settings → "
         "Developer Mode). Your wallet is only ever used when YOU tap "
         "a button — the bot never mints or moves funds on its own."
-    ).format(OWNER_CONTACT or "the owner")
+    ).format(OWNER_CONTACT or "the owner",
+             ADMIN_CONTACT or "the admin")
 
 
 # ---------------------------------------------------------- balance check

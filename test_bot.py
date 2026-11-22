@@ -53,7 +53,8 @@ def load_bot(env):
     env.setdefault("BAW_STATE_FILE", os.path.join(tmp, "state.json"))
     env.setdefault("W1_BAW_HOME", os.path.join(tmp, "w1"))
     for key in ("BOT_TOKEN", "CLAIM_USD", "MIN_BNB_USD", "TASK_CHANNELS",
-                "CHANNEL_INVITE_URL", "OWNER_CONTACT", "REWARD_TEXT",
+                "CHANNEL_INVITE_URL", "OWNER_CONTACT", "ADMIN_CONTACT",
+                "REWARD_TEXT",
                 "WEBHOOK_URL", "BSC_RPC", "BAW_USERS_HOME", "W1_BAW_HOME",
                 "BAW_STATE_FILE", "BAW_BIN"):
         if key in env:
@@ -115,7 +116,9 @@ def make_calls(bot):
 BASE_ENV = {"BOT_TOKEN": "test-token", "MIN_BNB_USD": "41",
             "TASK_CHANNELS": "", "CHANNEL_INVITE_URL":
             "https://t.me/+s2WrevCJwkFkOTVl",
-            "OWNER_CONTACT": "@imzaman7", "REWARD_TEXT": "$3 per account"}
+            "OWNER_CONTACT": "@imzaman7",
+            "ADMIN_CONTACT": "@RIYAD_KING_71",
+            "REWARD_TEXT": "$3 per account"}
 
 # --- A/B: health + /start seven buttons ----------------------------------
 bot, baw_users = load_bot(BASE_ENV)
@@ -611,8 +614,10 @@ check("help: explains Connect Wallet + Developer Mode",
       any("Connect Wallet" in t and "Developer Mode" in t for t in texts),
       str(texts))
 btns = buttons_of(calls)
-check("help: Message Owner button opens t.me/imzaman7",
-      any(b.get("url") == "https://t.me/imzaman7" for b in btns),
+check("help: Owner + Admin buttons open their Telegram chats",
+      any(b.get("url") == "https://t.me/imzaman7" for b in btns)
+      and any(b.get("url") == "https://t.me/RIYAD_KING_71"
+              for b in btns),
       str(btns))
 
 # --- J: balance + tasks (kept from before) ---------------------------------
