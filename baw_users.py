@@ -654,18 +654,40 @@ def simulate_mint(from_addr, qty, cost_wei, start):
     return None, last  # could not simulate; do not block
 
 
+# Keep trying for this long (official rule: up to 30 minutes on
+# BadStart). Each failed attempt only costs time — nothing is sent.
+MINT_RETRY_SECONDS = 900
+
+
 def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
     """Preview + execute one mint. Returns {"tx_hash", "status"}.
 
-    Follows the official mint rules: maxCost = live costOf(qty),
-    value == maxCost exactly, expectedStart = totalMinted + 1,
-    minTokens = 0, deadline = now + 600, referrer = W1. Every attempt
-    first runs a direct eth_call from the user's wallet to get the REAL
-    revert reason (NoAgent / BadStart). NoAgent stops immediately —
-    retrying can never fix it. Retries only when nothing was broadcast.
+    The mint contract reverts with BadStart unless expectedStart equals
+    the live totalMinted + 1, and the counter moves fast while many
+    people mint. baw's preview + execute take seconds, so most single
+    attempts lose the race. This keeps trying (fresh reads each time)
+    until MINT_RETRY_SECONDS passes:
+
+      1. read totalMinted + costOf, then a direct eth_call from the
+         user's wallet (milliseconds). Only when that passes do we hand
+         it to baw, so the slow baw steps run only on a fresh start.
+      2. if exact expectedStart is BadStart, probe start-1 / start+1
+         once per attempt; use one that passes (contract-approved).
+      3. baw preview, then execute. Any simulation error means nothing
+         was broadcast, so it is safe to loop again.
+
+    Official rules kept: value == maxCost == live costOf, minTokens 0,
+    deadline now+600, referrer W1. NoAgent stops at once. An execute
+    that returns no tx hash is never retried (could double-mint).
     """
-    last_err = None
-    for attempt in range(1, MINT_PREVIEW_ATTEMPTS + 1):
+    t_end = time.time() + MINT_RETRY_SECONDS
+    attempt = 0
+    bad_start = 0
+    other_reverts = 0
+    baw_fails = 0
+    last_err = "no attempt ran"
+    while time.time() < t_end:
+        attempt += 1
         stage = "read"
         try:
             fresh_total = total_minted()
@@ -678,26 +700,35 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
 
             stage = "simulate"
             ok, why = simulate_mint(from_addr, qty, max_cost, start)
-            sim_note = {True: "direct sim OK", False: "direct sim reverted",
-                        None: "direct sim unavailable"}[ok]
-            if ok is False:
-                if why.startswith("NoAgent"):
-                    raise NoAgentError(
-                        "NoAgent: this wallet has no .ai Agent ID "
-                        "(SPACE ID). Claim one first, then mint. "
-                        "[{}]".format(why))
-                raise BawError("direct simulation reverted: " + why)
+            if ok is False and why.startswith("NoAgent"):
+                raise NoAgentError(
+                    "NoAgent: this wallet has no .ai Agent ID (SPACE ID). "
+                    "Claim one first, then mint. [{}]".format(why))
+            if ok is False and why.startswith("BadStart"):
+                bad_start += 1
+                for alt in (start - 1, start + 1):
+                    ok2, why2 = simulate_mint(from_addr, qty, max_cost, alt)
+                    if ok2:
+                        start, ok, why = alt, True, ""
+                        break
+                if not ok:
+                    last_err = "BadStart on every probe (total {})".format(
+                        fresh_total)
+                    time.sleep(0.3)
+                    continue
+            elif ok is False:
+                other_reverts += 1
+                last_err = "direct simulation reverted: " + why
+                if other_reverts >= 5:
+                    raise BawError(last_err)
+                time.sleep(0.5)
+                continue
 
             deadline = int(time.time()) + 600
             data = mint_calldata(qty, max_cost, start, deadline)
 
             stage = "preview"
-            # baw can under-estimate gas for this mint, which shows up
-            # as "execution reverted". Alternate: baw's own estimate on
-            # odd attempts, an explicit generous gas limit on even ones.
-            gas_limit = 600000 if attempt % 2 == 0 else None
-            prev = preview(home, from_addr, MINT_CONTRACT, max_cost, data,
-                           gas_limit=gas_limit)
+            prev = preview(home, from_addr, MINT_CONTRACT, max_cost, data)
             if not preview_is_clean(prev):
                 raise BawError("mint preview not clean (status: {}). "
                                "Not minting.".format(
@@ -709,27 +740,26 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
             raise
         except BawError as exc:
             msg = str(exc)
-            last_err = "[{} stage, attempt {}/{}, {}, gasLimit {}] {}".format(
-                stage, attempt, MINT_PREVIEW_ATTEMPTS,
-                locals().get("sim_note", "no sim"),
-                "600000" if attempt % 2 == 0 else "auto", msg)
             low = msg.lower()
-            safe_to_retry = (stage in ("read", "simulate", "preview")
-                             or "351805" in msg or "953401" in msg
-                             or "simulation" in low)
-            if safe_to_retry and attempt < MINT_PREVIEW_ATTEMPTS:
-                time.sleep(2)
+            last_err = "[{} stage] {}".format(stage, msg)
+            if stage in ("read", "simulate", "preview"):
+                baw_fails += 1
+                time.sleep(0.5)
+                continue
+            if "351805" in msg or "953401" in msg or "simulation" in low:
+                baw_fails += 1  # refused before signing: safe to retry
                 continue
             raise BawError(last_err)
         if not result.get("tx_hash"):
-            # Do NOT retry: the mint may be waiting for approval in the
-            # Binance app and a retry could mint twice.
             raise BawError(
                 "mint execute returned no tx hash (status: {}). The mint "
                 "may need confirmation in the Binance app — check status "
                 "and try again.".format(result.get("status") or "unknown"))
         return result
-    raise BawError(last_err or "mint failed")
+    raise BawError(
+        "gave up after {} attempts / {}s (BadStart {}x, baw failures {}x). "
+        "The mint counter moved too fast. Last: {}".format(
+            attempt, MINT_RETRY_SECONDS, bad_start, baw_fails, last_err))
 
 
 def sell_ai(home, from_addr, ai_amount_wei):
