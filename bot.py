@@ -606,15 +606,17 @@ def handle_mint_quote(chat_id, user_id, qty):
     if bnb_wei < total_needed_wei:
         send_message(
             chat_id,
-            "Not enough BNB in your wallet.\n\n"
+            "❌ BNB কম আছে।\n\n"
+            "Wallet: <code>{}</code>\n"
+            "Balance: {} BNB\n"
             "Mint cost: {} BNB\n"
-            "Estimated gas: ~{} BNB\n"
-            "Total needed: {} BNB\n"
-            "Your BNB: {} BNB\n\n"
-            "Top up {} BNB first, then try again.".format(
+            "Gas: ~{} BNB\n"
+            "লাগবে: ~{} BNB (${:.2f})\n\n"
+            "BNB top-up করে আবার Mint চাপুন।".format(
+                address, _fmt_bnb(bnb_wei),
                 _fmt_bnb(cost_wei), _fmt_bnb(gas_wei),
-                _fmt_bnb(total_needed_wei), _fmt_bnb(bnb_wei),
-                _fmt_bnb(total_needed_wei - bnb_wei)),
+                _fmt_bnb(total_needed_wei),
+                total_needed_wei / 1e18 * price),
             main_keyboard())
         return
     dev = baw_users.dev_mode_enabled(user_id)
@@ -644,16 +646,15 @@ def handle_mint_quote(chat_id, user_id, qty):
         chat_id,
         "Mint {} shares — live quote:\n\n"
         "💰 Cost: {} BNB (~${:.2f})\n"
-        "⛽ Estimated gas: ~{} BNB\n"
-        "💲 Total needed: {} BNB\n"
-        "You will receive: ~{:,} AI (estimate)\n"
+        "⛽ Gas: ~{} BNB\n"
+        "💲 মোট লাগবে: {} BNB\n"
+        "You will receive: ~{:,} AI\n"
         "Sell value: ~{} BNB\n"
         "Net: about {} BNB + gas\n\n"
-        "The sell is NOT a profit — it gets your BNB back, minus "
-        "about $0.60 + gas.\n\n"
-        "Your wallet: <code>{}</code>\n"
+        "Sell করলে profit হবে না — BNB ফেরত পাবেন, ~$0.60 + gas কম।\n\n"
+        "Wallet: <code>{}</code>\n"
         "Your BNB: {} BNB\n\n"
-        "Press Confirm Mint to mint now.".format(
+        "Confirm Mint চাপুন।".format(
             qty, _fmt_bnb(cost_wei), cost_wei / 1e18 * price,
             _fmt_bnb(gas_wei), _fmt_bnb(total_needed_wei),
             expected_ai, _fmt_bnb(sell_wei),
@@ -707,7 +708,7 @@ def handle_mint_confirm(chat_id, user_id, qty):
                 "Ten Share" if qty == 10 else "Five Share"),
             main_keyboard())
         return
-    send_message(chat_id, "Minting {} shares...".format(qty))
+    send_message(chat_id, "⏳ Mint করা হচ্ছে...")
     try:
         ai_before = baw_users.token_balance(baw_users.AI_TOKEN, address)
         bnb_before = baw_users.eth_get_balance(address)
@@ -723,6 +724,7 @@ def handle_mint_confirm(chat_id, user_id, qty):
     mint_tx = result["tx_hash"]
     record.pop("pending_mint", None)
     record["minted_count"] = int(record.get("minted_count", 0)) + 1
+    record["total_shares"] = int(record.get("total_shares", 0)) + qty
     record["last_mint_tx"] = mint_tx
     record["first_mint_at"] = record.get("first_mint_at") or int(time.time())
     _save_record(user_id, record)
@@ -737,23 +739,33 @@ def handle_mint_confirm(chat_id, user_id, qty):
             sell = baw_users.sell_ai(home, address, received)
             bnb_after = baw_users.eth_get_balance(address)
             got_back = bnb_after - bnb_before + cost_wei
+            try:
+                sell_usd = got_back / 1e18 * bnb_price_usd()
+                sell_usd_txt = " (${:.2f})".format(sell_usd)
+            except Exception:
+                sell_usd_txt = ""
             sell_lines.append(
-                "AI received: {:,} AI\n"
-                "Sold for: {} BNB\n"
-                "Sell tx: {}".format(
-                    received, _fmt_bnb(got_back),
-                    BSCSCAN_TX.format(sell["swap_tx"])))
+                "💰 Sell সফল!\n"
+                "AI বিক্রি: {:,}\n"
+                "BNB ফেরত: {} BNB{}\n"
+                "Sell Tx: {}\n"
+                "{}".format(
+                    received, _fmt_bnb(got_back), sell_usd_txt,
+                    sell["swap_tx"], BSCSCAN_TX.format(sell["swap_tx"])))
     except BawError as exc:
         sell_lines.append(
             "Sell failed: {} — your AI stays in your wallet. "
             "You can sell it later from your wallet.".format(exc))
     send_message(
         chat_id,
-        "✅ Minted {} shares!\n\n"
-        "Mint tx: {}\n"
+        "✅ Mint সফল!\n\n"
+        "Shares: {} (মোট আপনার: {})\n"
+        "Tx: {}\n"
         "{}\n\n"
-        "You can now press Claim $3 for your one-time reward.".format(
-            qty, BSCSCAN_TX.format(mint_tx), "\n".join(sell_lines)),
+        "{}\n\n"
+        "Claim $3 চাপুন — আপনার one-time reward নিন।".format(
+            qty, record["total_shares"], mint_tx,
+            BSCSCAN_TX.format(mint_tx), "\n".join(sell_lines)),
         main_keyboard())
 
 
@@ -837,7 +849,7 @@ def handle_callback(query):
     # mint buttons also show a toast — the live quote takes a few
     # seconds of chain reads, and silence until then feels slow.
     if data in ("mint_5", "mint_10"):
-        answer_callback(query["id"], "⏳ Checking live mint numbers...")
+        answer_callback(query["id"], "⌛ Mint-এর হিসাব করা হচ্ছে...")
     else:
         answer_callback(query["id"])
 

@@ -381,14 +381,14 @@ texts = texts_of(calls)
 check("mint: quote shows cost 0.07800 BNB",
       any("0.07800 BNB" in t for t in texts), str(texts))
 check("mint: quote shows estimated gas + total needed",
-      any("Estimated gas: ~0.00002 BNB" in t
-          and "Total needed: 0.07802 BNB" in t for t in texts),
+      any("Gas: ~0.00002 BNB" in t
+          and "মোট লাগবে: 0.07802 BNB" in t for t in texts),
       str(texts))
 check("mint: quote shows expected AI + sell value",
       any("11,380,000,000,000" in t and "0.07690" in t for t in texts),
       str(texts))
 check("mint: quote says sell is NOT a profit",
-      any("NOT a profit" in t for t in texts), str(texts))
+      any("profit হবে না" in t for t in texts), str(texts))
 btns = buttons_of(calls)
 check("mint: Confirm Mint button present",
       any(b.get("callback_data") == "confirm_mint_10" for b in btns),
@@ -412,7 +412,7 @@ baw_users.eth_get_balance = lambda addr: 10 ** 15  # 0.001 BNB
 calls.clear()
 client.post("/webhook", json=callback_update(111, "mint_10"))
 check("mint: insufficient BNB -> top up message",
-      any("Not enough BNB" in t for t in texts_of(calls)))
+      any("BNB কম আছে" in t and "লাগবে:" in t for t in texts_of(calls)))
 baw_users.eth_get_balance = lambda addr: 10 ** 18
 
 # G5: Developer Mode off -> instructions, no quote
@@ -456,8 +456,9 @@ baw_users.eth_get_balance = _bnb_seq
 calls.clear()
 client.post("/webhook", json=callback_update(111, "confirm_mint_10"))
 texts = texts_of(calls)
-check("mint: confirm -> Minted 10 shares!",
-      any("Minted 10 shares!" in t for t in texts), str(texts))
+check("mint: confirm -> Mint সফল with shares + total",
+      any("Mint সফল" in t and "Shares: 10 (মোট আপনার: 10)" in t
+          for t in texts), str(texts))
 check("mint: confirm -> mint tx hash shown",
       any("0xminttxhash" in t for t in texts), str(texts))
 check("mint: confirm -> sell reported with swap tx",
