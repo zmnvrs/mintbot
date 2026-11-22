@@ -1,93 +1,147 @@
-# MintBot — Telegram mint referral bot
+# MintBot — Telegram mint referral bot (in-Telegram only)
 
-An admin-style Telegram bot: users press **Start**, the bot checks they
-hold enough BNB, asks them to complete tasks (join channels), and gives
-them **Mint 5** and **Mint 10** buttons that open the bot's **own mint
-page** inside Telegram as a Web App (Mini App) — the user connects
-their own wallet there and mints, wallet connect + instant mint all
-inside Telegram, just like the admin's bot. No external mint site is
-needed: the page calls the Agent ID (AI) mint contract on BNB Smart
-Chain directly.
+An admin-style Telegram bot, exactly like the admin's bot: users
+connect their Binance agent wallet by scanning a QR code **inside
+Telegram**, then mint Agent ID (AI) shares and claim a **$3** reward —
+all in the bot, no web page, nothing outside Telegram.
 
-**How it works:** the bot is only the funnel. It never connects a wallet
-and never mints anything itself. The Mint buttons open the bot's own
-mint page inside Telegram as a Mini App — each user connects **their
-own** wallet there (WalletConnect) and mints on the site, without
-leaving Telegram. (The Binance agent wallet API cannot be connected
-to a public bot — that would be a drain risk.)
+**How it works:** each user pairs their own agent wallet with the
+bot (Binance sign-in QR, scanned in the Binance app). The bot runs
+the mint for them through the backend (the `baw` CLI) from their own
+paired wallet. The referral on every mint goes to the owner's W1
+wallet. The bot never holds a private key — `baw` handles auth; the
+bot only keeps a QR code ID and session state.
 
-## What the bot does
+## Buttons (like the admin's bot)
 
-- `/start` — welcome message with the reward text and 4 buttons:
-  **Mint 5**, **Mint 10** (open the bot's own mint page inside Telegram
-  as a Mini App), **Check Balance**, **Tasks**.
-- **Check Balance** — the user sends a BSC wallet address (0x...). The
-  bot reads the BNB balance from a public BSC RPC and the BNB price from
-  the Binance public ticker (no API key), then says Eligible / Not
-  eligible with the real USD value. Minimum is `MIN_BNB_USD` (default $41).
-- **Tasks** — joining the channel is **optional** and never blocks
-  minting. If channels are listed in `TASK_CHANNELS`, the bot checks
-  with `getChatMember` whether the user joined each one and reports
-  done / pending. If none are listed it says there are no required
-  tasks and the user can mint right away.
-- User state is kept **in memory only**. A free Render service sleeps and
-  restarts, and that wipes it — by design, nothing is stored.
+- **Connect Wallet** — the bot sends a Binance sign-in QR as an
+  image. The user scans it in the Binance app to pair their agent
+  wallet. The QR expires in ~5 minutes; on expiry the bot says
+  "QR-এর মেয়াদ শেষ হয়ে গেছে। আবার Connect Wallet চাপুন।" (press
+  Connect Wallet again for a new one).
+- **Check status** — shows the paired wallet address, BNB balance,
+  Agent ID status and mint status. Press it after scanning the QR to
+  finish pairing.
+- **Mint Ten Share** / **Mint Five Share** — mints Agent ID (AI)
+  shares from the user's paired wallet. The bot first shows the live
+  numbers (cost, expected AI, expected sell value) and the user taps
+  **Confirm Mint**. The mint only runs on that explicit tap, only
+  with a clean `baw` preview (value = live cost exactly, no extra
+  approvals). After the mint the bot immediately sells the AI just
+  received and reports what came back.
+- **Claim $3** — after the user's first mint through the bot, one
+  $3 USDT claim per account, paid from the owner's W1 wallet.
+- **Help** — explains the flow. **Disconnect** — unpairs the wallet.
+- **Join Channel**, **Check Balance** (send a 0x address, the bot
+  reads the BNB balance and says Eligible / Not eligible), **Tasks**
+  (joining the channel is optional and never blocks minting).
 
-## The mint page (own page, no external site)
+## The mint (what actually happens)
 
-The Mint buttons open `{WEBHOOK_URL}/mint?qty=5` (or `qty=10`) — a
-page served by this app. It needs a **public HTTPS URL**, so it only
-works once the app is deployed (Render); in polling mode with no
-public URL the buttons fall back to the `MINT_URL` links instead.
+The mint contract is `0xa4bFa31f615F8e2a13dce3d93C0996CC5a56763D`
+(BNB Smart Chain, chainId 56). The referrer on every mint is W1
+(`0xE012133823df5452de9c10a73fE935d26B995A97`) — never anyone else,
+and the minting wallet can never be W1 itself (self-referral is not
+allowed). Per mint: `mint(qty, W1, maxCost, totalMinted+1, 0,
+now+600)` with `value = maxCost` (live `costOf(qty)` exactly). If
+`costOf(10)` is above 0.08 BNB (0.008 BNB/share cap) the bot stops.
 
-The page (`mint_page.py`, served at `GET /mint`):
-1. Connects the user's own EVM wallet inside Telegram via
-   **WalletConnect** — needs a `WC_PROJECT_ID` (free from
-   https://cloud.walletconnect.com — create a project, copy the
-   Project ID). Without it the page says wallet connect is not
-   configured yet and cannot connect.
-2. After connect it reads the **live** numbers from the Agent ID mint
-   contract (`0xa4bFa31f615F8e2a13dce3d93C0996CC5a56763D`, BNB Chain):
-   `costOf(qty)`, `totalMinted()`, `paidOnce(wallet)`, and the
-   AI/WBNB pair reserves — and shows the user, **before** they
-   confirm: shares, exact mint cost in BNB, the AI they will receive
-   (estimated from the live pool price), and the expected sell value
-   from the router's `getAmountsOut`. If the expected sell value is
-   below the mint cost it warns plainly that selling now would lose
-   money. The Mint button stays disabled until these numbers load.
-3. On confirm it re-reads `costOf`/`totalMinted` fresh, simulates the
-   mint (static call — if it would revert, e.g. no `.ai` Agent ID, it
-   stops and shows the error), then sends
-   `mint(qty, W1, maxCost, totalMinted+1, 0, now+600)` with
-   `value = maxCost`. The referrer is always W1
-   (`0xE012133823df5452de9c10a73fE935d26B995A97`); the minting wallet
-   can never be W1 itself. If the cost is above the cap (0.008 BNB
-   per share) the page stops. It shows the tx hash + BscScan link.
-4. Instant sell is **OFF by default** (`ENABLE_INSTANT_SELL=0`). When
-   on, after a mint it sells ONLY the AI actually received (wallet
-   balance change), approves the router for exactly that amount, and
-   swaps with a 5% slippage guard. **Live economics (2026-11-22): a
-   10-share mint costs 0.078 BNB and the AI received sells back for
-   ~0.077 BNB — the sell loses ~$0.60 plus gas. It is NOT a profit
-   and NOT a "reward".** Keep instant sell off unless you have
-   verified the live numbers yourself.
+Before minting the bot checks: the wallet is paired, it holds a .ai
+Agent ID (the contract reverts without one — the preview catches
+it), it has enough BNB for the cost + gas, and Developer Mode is ON
+in the Binance app (Agentic Wallet → Settings → Developer Mode —
+`baw` contract calls need it). Any failed check stops the mint and
+the bot says why, plainly. Nothing is ever sent without a clean
+preview.
 
-Safety: BNB is never sent directly to the contract address (only as
-the mint call's value); no token is approved except the single AI
-approval for the sell; no other contract is called; any failed read
-or simulation stops the page and shows the error — values are never
-guessed.
+**Live economics (verified on-chain, 2026-11-22):** a 10-share mint
+costs 0.078 BNB and the minter receives ~11.38B AI (the BNB paid
+converts to AI at the pool price, plus 50M AI per share). Selling
+that AI back gives ~0.0769 BNB — the mint+sell loses ~0.001 BNB
+(~$0.60) plus gas. **The sell is NOT a profit and NOT a "reward"**
+— it gets the user's BNB back. The bot always shows the live cost
+vs sell value before the user confirms, using live `costOf`, pair
+reserves and the router's `getAmountsOut` — never a guessed number.
 
-## Mint links — fallback only (used when WEBHOOK_URL is not set)
+**Referral:** W1 earns 5% at base tier (~$2.30 per 10-share mint),
+10% silver at 10 invites (~$4.60), 15% gold at 100 invites
+(~$6.87). Rewards accrue as `owedOf(W1)` and need `claimOwed()` —
+they are not sent automatically.
 
-**Way 1 — one template link with a `{qty}` placeholder:**
-`MINT_URL=https://example.com/mint?ref=YOURCODE&qty={qty}`
-The Mint 5 button opens the link with `qty=5`, Mint 10 with `qty=10`.
+## The $3 claim — read this first
 
-**Way 2 — a separate link for each button:**
-Set both `MINT_URL_5` and `MINT_URL_10`. When both are set they are
-used instead of `MINT_URL`. (If only one is set, the bot falls back to
-the `MINT_URL` template.)
+- One claim per Telegram account, only after that account's first
+  successful mint through the bot.
+- Paid in USDT from W1 (`0xE012...`), via a USDT contract-call
+  transfer from the W1 `baw` session (not `wallet send` — that is
+  blocked unless the recipient is in W1's address book).
+- **W1 must hold the USDT.** W1 currently holds ~0 USDT, so claims
+  CANNOT be paid until the owner funds W1. If the pool is short, the
+  bot tells the user plainly that the reward pool is empty and to
+  contact the owner — it never fails silently and never sends a
+  partial payment.
+- **The claim loses money at base tier:** paying $3 against ~$2.30
+  referral per 10-share mint loses ~$0.70 per user, until W1 reaches
+  silver (10%, ~$4.60) or gold (15%, ~$6.87). Fund W1 accordingly.
+- **Deployment caveat:** the W1 `baw` session lives on the owner's
+  own machine (`/home/hatch`). On Render it does not exist, and the
+  free tier's filesystem is ephemeral — so claims cannot be paid
+  from a Render deploy unless the W1 session is present on that
+  host. If W1 is not connected there, the bot reports the reward
+  pool as unavailable. Minting (which uses each user's own paired
+  session) works wherever the bot runs.
+
+## Architecture — per-user baw sessions
+
+- `baw_users.py` — everything that touches `baw` or the chain:
+  per-user session dirs (`~/.baw-users/<telegram_user_id>/`),
+  sign-in QR generation, verify, status/address/Agent ID/settings
+  reads, live chain reads (`costOf`, `totalMinted`, `paidOnce`,
+  pair reserves, router quotes), mint preview/execute, instant
+  sell, and the W1 claim payment. `baw` is invoked as a subprocess
+  with that user's HOME — sessions can never leak between users.
+- `bot.py` — the Telegram bot (Flask webhook + plain Bot API calls,
+  polling mode with `--poll`). All seven buttons, the quote →
+  confirm mint flow, the claim flow, balance check, tasks.
+- Per-user bot records (paired address, Agent ID, mint/claim state,
+  pending QR) live in a small JSON state file
+  (`<BAW_USERS_HOME>/state.json`). A free Render service sleeps and
+  restarts, and its filesystem is ephemeral — records and `baw`
+  sessions are wiped then, and users have to pair again. By design.
+- The bot moves funds ONLY in two flows, both only on the owning
+  user's explicit button tap: (1) the mint (user's paired wallet →
+  mint contract, value = live cost), (2) the $3 claim (W1 → the
+  claiming user's wallet, USDT, once per account after a mint).
+  Nothing else is ever moved, no unknown contract is ever approved,
+  and W1 is never minted from through this bot.
+
+## The baw CLI
+
+The backend is the Binance Agentic Wallet CLI (`baw`). It is wiped
+when the VM restarts — reinstall it with:
+
+```bash
+npm install -g @binance/agentic-wallet@1.12.0
+```
+
+The Render `buildCommand` in `render.yaml` does this install on
+every deploy. If `baw` is missing on the host, pairing/mint/claim
+fail with a clear "baw CLI is not installed" message instead of
+anything half-done.
+
+Useful `baw` facts (from the live CLI, v1.12.0):
+- `baw auth signin --json` → `qrCodeId`, `expireAt` (ms epoch),
+  `urlForWeb` (the QR encodes this), `pairingCode` (~5 min validity).
+- `baw auth verify --qrCodeId <id>` after the scan (polls until
+  wallet creation completes); `baw wallet status --json` confirms.
+- `baw wallet agent-id --json` shows the claimed `.ai` name;
+  `baw wallet settings --json` shows `devMode.enabled`.
+- `baw contract-call preview --binanceChainId 56 --from <addr>
+  --to <contract> --value <wei> --inputData <hex> [--gasLimit N]
+  --json`, then `baw contract-call execute --requestId <id> --json`.
+  Preview requestIds expire in ~2–5 min. `baw` gas estimation can
+  under-estimate — the bot retries a failed preview once with an
+  explicit `--gasLimit 400000`.
 
 ## Deploy step by step
 
@@ -98,62 +152,44 @@ the `MINT_URL` template.)
 3. BotFather replies with a token like `123456:ABC...` — copy it.
    This is the `BOT_TOKEN`. Never share it or commit it to git.
 
-### 2. Get a WalletConnect project ID (for the mint page)
+### 2. Put the code on GitHub
 
-1. Go to https://cloud.walletconnect.com, sign up free, create a
-   project.
-2. Copy its **Project ID** — this is the `WC_PROJECT_ID` env var.
-   (It is a public identifier, not a secret, but keep it in env vars
-   anyway — never hardcode it.)
-3. Without it the mint page shows "wallet connect is not configured
-   yet" and no wallet can connect.
+The repo is `zmnvrs/mintbot` (public, branch `main`). Push the code
+after changes (the push uses the GitHub connector's snapshot push):
 
-The old agentidai.meme site is dead (NXDOMAIN) and was Safe Browsing
-phishing-flagged — the bot no longer depends on it. The `MINT_URL`
-links are only a fallback for when the app has no public URL.
+```bash
+git add bot.py baw_users.py requirements.txt render.yaml Procfile .env.example .gitignore README.md
+git commit -m "Mint referral bot"
+git push origin main
+```
 
-### 3. Put the code on GitHub
-
-1. Create a **new empty repo** on github.com (in the browser — the
-   GitHub app cannot create repos).
-2. From this folder, push the code:
-   ```bash
-   git init
-   git add bot.py mint_page.py requirements.txt render.yaml Procfile .env.example .gitignore README.md
-   git commit -m "Mint referral bot"
-   git branch -M main
-   git remote add origin https://github.com/YOURNAME/YOURREPO.git
-   git push -u origin main
-   ```
-
-### 4. Create the free Render service
+### 3. Create the free Render service
 
 1. Go to https://dashboard.render.com → **New +** → **Web Service**.
-2. Connect your GitHub repo.
+2. Connect your GitHub repo (`zmnvrs/mintbot`).
 3. Settings: **Runtime** Python, **Build Command**
-   `pip install -r requirements.txt`, **Start Command**
+   `pip install -r requirements.txt && npm install -g
+   @binance/agentic-wallet@1.12.0`, **Start Command**
    `gunicorn bot:app --bind 0.0.0.0:$PORT`, **Plan** Free.
-   (If you use the `render.yaml` blueprint instead, these are filled in
-   automatically — see step 5 for the env vars either way.)
+   (If you use the `render.yaml` blueprint instead, these are filled
+   in automatically — see step 4 for the env vars either way.)
 4. Add these **Environment Variables** in the Render dashboard:
    | Variable | Example |
    |---|---|
    | `BOT_TOKEN` | token from @BotFather |
-   | `MINT_URL` | fallback mint link, only when `WEBHOOK_URL` is not set (see above) |
-   | `MINT_URL_5` | (only if using the fallback way 2) |
-   | `MINT_URL_10` | (only if using the fallback way 2) |
-   | `WC_PROJECT_ID` | WalletConnect Cloud project ID (mint page wallet connect) |
-   | `ENABLE_INSTANT_SELL` | `0` (default off — see the mint page section) |
+   | `CLAIM_USD` | `3` |
    | `MIN_BNB_USD` | `41` |
    | `TASK_CHANNELS` | `@channel1,@channel2` or a numeric chat ID like `-1001234567890` (or leave empty). An invite link does NOT work here — to get the numeric ID, forward any message from the channel to @getmyid_bot. |
    | `CHANNEL_INVITE_URL` | `https://t.me/+s2WrevCJwkFkOTVl` (Join Channel button) |
    | `OWNER_CONTACT` | `@imzaman7` (shown in the welcome message) |
    | `REWARD_TEXT` | `$3 per account` |
    | `WEBHOOK_URL` | `https://YOURAPP.onrender.com` (your Render URL) |
+   | `BAW_USERS_HOME` | (leave unset — defaults to `~/.baw-users`) |
+   | `W1_BAW_HOME` | (leave unset unless W1's session lives elsewhere) |
 5. Deploy. When it is live, note your app URL, e.g.
    `https://mintbot-xxxx.onrender.com`.
 
-### 5. Point Telegram at the bot (set the webhook)
+### 4. Point Telegram at the bot (set the webhook)
 
 After the first deploy, open this URL in your browser (replace with
 your real values):
@@ -166,11 +202,22 @@ https://api.telegram.org/bot<YOUR_TOKEN>/setWebhook?url=https://YOURAPP.onrender
 ```
 You should get `{"ok":true,...}` back.
 
-### 6. Test it
+### 5. Test it
 
 Open your bot in Telegram and send `/start`. You should see the
-welcome message with **Mint 5**, **Mint 10**, **Check Balance** and
-**Tasks** buttons. Try Check Balance with a wallet address.
+welcome message with **Connect Wallet**, **Check status**,
+**Mint Ten Share**, **Mint Five Share**, **Claim $3**, **Help**,
+**Disconnect**. Press Connect Wallet — a Binance QR should appear.
+Scan it in the Binance app, press Check status, and it should show
+your wallet as connected. (Do not mint with a real wallet until you
+have read the mint economics above.)
+
+### 6. Fund W1 for claims
+
+Before anyone can claim, send USDT to W1
+(`0xE012133823df5452de9c10a73fE935d26B995A97`) — at least $3 per
+expected claim, plus a little BNB for the claim's gas. Remember the
+claim loses ~$0.70 per user at base tier (see above).
 
 ### 7. Tasks — add the bot as admin of each channel
 
@@ -183,9 +230,11 @@ or the bot will report "could not verify" for that channel.
 - A free web service **sleeps after ~15 minutes** with no traffic.
   A Telegram webhook wakes it up — the first message after a sleep
   can take ~30–60 seconds to answer. That is normal on the free plan.
-- Restarts wipe the in-memory user state (a user mid balance-check has
-  to press Check Balance again). Nothing else is lost.
-- If the mint link changes, update the env vars in the Render
+- Restarts wipe the in-memory user state AND the per-user `baw`
+  sessions and the state file (ephemeral filesystem). Users have to
+  pair again after a restart — tell them that in Help if it
+  confuses people.
+- If the claim amount changes, update `CLAIM_USD` in the Render
   dashboard and restart the service (Manual Deploy → Restart).
 
 ## Local test
@@ -194,19 +243,23 @@ or the bot will report "could not verify" for that channel.
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-BOT_TOKEN=test-token MINT_URL='https://example.com/mint?ref=X&qty={qty}' \
-  python bot.py
+npm install -g @binance/agentic-wallet@1.12.0
+BOT_TOKEN=test-token python bot.py
 # in another terminal:
 curl http://127.0.0.1:5000/health
-python test_bot.py   # simulated /start + balance + tasks, no real token
+python test_bot.py   # mocked baw + chain reads, no real wallet
 ```
 
 ## Files
 
-- `bot.py` — the whole bot (Flask webhook + plain Telegram Bot API calls)
-- `mint_page.py` — the bot's own mint Web App page (served at GET /mint)
-- `requirements.txt` — Flask, requests, gunicorn
+- `bot.py` — the whole bot (Flask webhook + plain Telegram Bot API
+  calls, polling mode with `--poll`)
+- `baw_users.py` — per-user `baw` sessions, chain reads, mint/sell/
+  claim logic
+- `requirements.txt` — Flask, requests, gunicorn, qrcode[pil],
+  eth-abi, eth-hash[pycryptodome]
 - `render.yaml` — Render blueprint (free web service)
 - `Procfile` — `web: gunicorn bot:app`
-- `.env.example` — all env vars, with the two mint-link ways documented
-- `test_bot.py` — offline tests (no real token, no network calls to Telegram)
+- `.env.example` — all env vars
+- `test_bot.py` — offline tests (mocked `baw`, no real token, no
+  real wallet, no network calls to Telegram)

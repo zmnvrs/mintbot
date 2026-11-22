@@ -3,26 +3,26 @@ services:
     name: mintbot
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && npm install -g @binance/agentic-wallet@1.12.0
     startCommand: gunicorn bot:app --bind 0.0.0.0:$PORT
     envVars:
       - key: BOT_TOKEN
         sync: false
-      - key: MINT_URL
-        sync: false
-      - key: MINT_URL_5
-        sync: false
-      - key: MINT_URL_10
-        sync: false
-      - key: WC_PROJECT_ID
-        sync: false
-      - key: ENABLE_INSTANT_SELL
-        value: "0"
+      - key: CLAIM_USD
+        value: "3"
       - key: MIN_BNB_USD
         value: "41"
       - key: TASK_CHANNELS
         sync: false
+      - key: CHANNEL_INVITE_URL
+        sync: false
+      - key: OWNER_CONTACT
+        sync: false
       - key: REWARD_TEXT
         value: "$3 per account"
       - key: WEBHOOK_URL
+        sync: false
+      - key: BAW_USERS_HOME
+        sync: false
+      - key: W1_BAW_HOME
         sync: false

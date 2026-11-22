@@ -1,20 +1,37 @@
-"""Offline tests for bot.py — no real token, no calls to Telegram.
+"""Offline tests for bot.py + baw_users.py — no real token, no real
+wallet, no calls to Telegram or to the baw CLI (baw is mocked).
 
 Run:  python test_bot.py
 from the project folder (after pip install -r requirements.txt).
 
 What it checks:
   A. /health returns 200.
-  B. A simulated /start webhook update makes the bot send a message with
-     Mint 5 and Mint 10 Web App buttons (MINT_URL template with {qty}).
-  C. Same, but with MINT_URL_5 / MINT_URL_10 set instead.
-  D. Balance flow: Check Balance -> address -> Eligible / Not eligible.
-  E. Tasks flow with no channels configured -> optional, can mint now.
+  B. /start shows the admin bot's seven buttons (Connect Wallet,
+     Check status, Mint Ten Share, Mint Five Share, Claim $3, Help,
+     Disconnect) as callback buttons — no Web App, no WalletConnect.
+  C. The /mint route is gone (404) and bot.py has no Web App /
+     WalletConnect / mint_page references.
+  D. Connect Wallet flow with mocked baw: QR image sent as a photo,
+     pending QR stored, pairing code shown.
+  E. Check status: pending QR verifies -> paired; expired QR -> the
+     Bengali expiry message; not scanned yet -> "Not paired yet".
+  F. Per-user session isolation: two users get different baw HOMEs.
+  G. Mint quote + confirm with mocked baw/chain reads: live numbers
+     shown, confirm mints + sells, tx hashes reported; quote expiry,
+     cost cap, insufficient BNB, and preview failure all stop cleanly.
+  H. Claim $3: needs a mint first; once per account; empty W1 reward
+     pool -> plain message, claim NOT used up; success marks claimed.
+  I. Disconnect unpairs and clears state. Help explains the flow.
+  J. Balance flow (address -> Eligible / Not eligible) and Tasks flow
+     with no channels -> optional, can mint now.
+  K. Polling mode dispatches a /start update.
 """
 
 import importlib
 import os
 import sys
+import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -29,17 +46,25 @@ def check(name, condition, detail=""):
 
 
 def load_bot(env):
-    for key in ("BOT_TOKEN", "MINT_URL", "MINT_URL_5", "MINT_URL_10",
-                "MIN_BNB_USD", "TASK_CHANNELS", "CHANNEL_INVITE_URL",
-                "OWNER_CONTACT", "REWARD_TEXT", "WEBHOOK_URL",
-                "WC_PROJECT_ID", "ENABLE_INSTANT_SELL"):
+    """Load bot + baw_users with the given env (fresh temp state dir)."""
+    tmp = tempfile.mkdtemp(prefix="mintbot-test-")
+    env = dict(env)
+    env.setdefault("BAW_USERS_HOME", os.path.join(tmp, "baw-users"))
+    env.setdefault("BAW_STATE_FILE", os.path.join(tmp, "state.json"))
+    env.setdefault("W1_BAW_HOME", os.path.join(tmp, "w1"))
+    for key in ("BOT_TOKEN", "CLAIM_USD", "MIN_BNB_USD", "TASK_CHANNELS",
+                "CHANNEL_INVITE_URL", "OWNER_CONTACT", "REWARD_TEXT",
+                "WEBHOOK_URL", "BSC_RPC", "BAW_USERS_HOME", "W1_BAW_HOME",
+                "BAW_STATE_FILE", "BAW_BIN"):
         if key in env:
             os.environ[key] = env[key]
         else:
             os.environ.pop(key, None)
+    import baw_users
     import bot
+    importlib.reload(baw_users)
     importlib.reload(bot)
-    return bot
+    return bot, baw_users
 
 
 def start_update(chat_id=111):
@@ -54,6 +79,15 @@ def start_update(chat_id=111):
     }
 
 
+def callback_update(chat_id, data, update_id=2, query_id="q1"):
+    return {
+        "update_id": update_id,
+        "callback_query": {"id": query_id, "from": {"id": chat_id},
+                           "message": {"chat": {"id": chat_id}},
+                           "data": data},
+    }
+
+
 def buttons_of(calls):
     """Inline-keyboard buttons of the last sendMessage call."""
     sends = [p for m, p in calls if m == "sendMessage"]
@@ -63,8 +97,11 @@ def buttons_of(calls):
     return [b for row in kb for b in row]
 
 
-def run_scenario(name, env, expected5, expected10):
-    bot = load_bot(env)
+def texts_of(calls):
+    return [p["text"] for m, p in calls if m == "sendMessage"]
+
+
+def make_calls(bot):
     calls = []
 
     def fake_tg(method, payload):
@@ -72,153 +109,504 @@ def run_scenario(name, env, expected5, expected10):
         return {"ok": True, "result": {}}
 
     bot.tg = fake_tg
-    client = bot.app.test_client()
-
-    check(name + ": /health is 200",
-          client.get("/health").status_code == 200)
-    resp = client.post("/webhook", json=start_update())
-    check(name + ": /webhook /start returns 200",
-          resp.status_code == 200)
-    btns = buttons_of(calls)
-    urls = {b["text"]: (b.get("web_app") or {}).get("url") for b in btns
-            if "web_app" in b}
-    check(name + ": Mint 5 button Web App URL",
-          urls.get(bot._bold("Mint 5")) == expected5, str(urls))
-    check(name + ": Mint 10 button Web App URL",
-          urls.get(bot._bold("Mint 10")) == expected10, str(urls))
-    check(name + ": all button labels are bold",
-          all(b["text"] and all(
-              c == " " or "\U0001D400" <= c <= "\U0001D433"
-              or "\U0001D7CE" <= c <= "\U0001D7D7"
-              for c in b["text"]) for b in btns), str(btns))
-    check(name + ": Check Balance callback button present",
-          any(b.get("callback_data") == "check_balance" for b in btns))
-    check(name + ": Tasks callback button present",
-          any(b.get("callback_data") == "tasks" for b in btns))
-    return bot, calls, client
+    return calls
 
 
-# --- A/B: MINT_URL template with {qty} ------------------------------------
-run_scenario(
-    "template",
-    {"BOT_TOKEN": "test-token",
-     "MINT_URL": "https://example.com/mint?ref=TESTCODE&qty={qty}",
-     "MIN_BNB_USD": "41", "TASK_CHANNELS": "",
-     "REWARD_TEXT": "$3 per account"},
-    "https://example.com/mint?ref=TESTCODE&qty=5",
-    "https://example.com/mint?ref=TESTCODE&qty=10")
+BASE_ENV = {"BOT_TOKEN": "test-token", "MIN_BNB_USD": "41",
+            "TASK_CHANNELS": "", "CHANNEL_INVITE_URL":
+            "https://t.me/+s2WrevCJwkFkOTVl",
+            "OWNER_CONTACT": "@imzaman7", "REWARD_TEXT": "$3 per account"}
 
-# --- C: separate MINT_URL_5 / MINT_URL_10 ----------------------------------
-run_scenario(
-    "separate-urls",
-    {"BOT_TOKEN": "test-token",
-     "MINT_URL": "",
-     "MINT_URL_5": "https://example.com/mint5?ref=AAA",
-     "MINT_URL_10": "https://example.com/mint10?ref=BBB",
-     "MIN_BNB_USD": "41", "TASK_CHANNELS": "",
-     "REWARD_TEXT": "$3 per account"},
-    "https://example.com/mint5?ref=AAA",
-    "https://example.com/mint10?ref=BBB")
-
-# --- D: balance flow (mocked RPC + price) ----------------------------------
-bot = load_bot({"BOT_TOKEN": "test-token",
-                "MINT_URL": "https://example.com/mint?ref=X&qty={qty}",
-                "MIN_BNB_USD": "41", "TASK_CHANNELS": ""})
-calls = []
-bot.tg = lambda m, p: calls.append((m, p)) or {"ok": True, "result": {}}
+# --- A/B: health + /start seven buttons ----------------------------------
+bot, baw_users = load_bot(BASE_ENV)
+calls = make_calls(bot)
 client = bot.app.test_client()
 
-# 0.1 BNB at $500 = $50 -> eligible
+check("health: /health is 200", client.get("/health").status_code == 200)
+resp = client.post("/webhook", json=start_update())
+check("start: /webhook /start returns 200", resp.status_code == 200)
+btns = buttons_of(calls)
+by_data = {b.get("callback_data"): b for b in btns if "callback_data" in b}
+for data in ("connect_wallet", "check_status", "mint_10", "mint_5",
+             "claim_3", "help", "disconnect"):
+    check("start: {} button present".format(data), data in by_data, str(btns))
+check("start: Mint Ten Share label",
+      by_data.get("mint_10", {}).get("text") == bot._bold("Mint Ten Share"))
+check("start: Mint Five Share label",
+      by_data.get("mint_5", {}).get("text") == bot._bold("Mint Five Share"))
+check("start: Claim $3 label (not $3.5)",
+      by_data.get("claim_3", {}).get("text") == bot._bold("Claim $3"))
+check("start: no Web App buttons anywhere",
+      not any("web_app" in b for b in btns), str(btns))
+check("start: all button labels are bold",
+      all(b["text"] and all(
+          c == " " or c == "$" or "\U0001D400" <= c <= "\U0001D433"
+          or "\U0001D7CE" <= c <= "\U0001D7D7"
+          for c in b["text"]) for b in btns), str(btns))
+check("start: Join Channel button with invite URL",
+      any(b.get("url") == "https://t.me/+s2WrevCJwkFkOTVl" for b in btns))
+check("start: Check Balance callback button present",
+      "check_balance" in by_data)
+check("start: Tasks callback button present", "tasks" in by_data)
+texts = texts_of(calls)
+check("start: welcome mentions Connect Wallet + $3",
+      any("Connect Wallet" in t and "$3" in t for t in texts), str(texts))
+check("start: welcome shows Owner @imzaman7",
+      any("Owner: @imzaman7" in t for t in texts), str(texts))
+
+# --- C: /mint route gone, no Web App references ---------------------------
+check("mint route: GET /mint returns 404",
+      client.get("/mint?qty=5").status_code == 404)
+check("mint route: GET /mint?qty=10 returns 404",
+      client.get("/mint?qty=10").status_code == 404)
+src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "bot.py"), encoding="utf-8").read()
+check("no webapp: bot.py has no 'web_app'",
+      "web_app" not in src)
+check("no webapp: bot.py has no 'WalletConnect'",
+      "WalletConnect" not in src)
+check("no webapp: bot.py has no 'mint_page'",
+      "mint_page" not in src)
+check("no webapp: bot.py has no 'WC_PROJECT_ID'",
+      "WC_PROJECT_ID" not in src)
+check("no webapp: bot.py has no '/mint' route",
+      '"/mint"' not in src)
+check("no webapp: mint_page.py file is deleted",
+      not os.path.exists(os.path.join(
+          os.path.dirname(os.path.abspath(__file__)), "mint_page.py")))
+
+# --- D: Connect Wallet flow (mocked baw) ---------------------------------
+bot, baw_users = load_bot(BASE_ENV)
+calls = make_calls(bot)
+client = bot.app.test_client()
+photos = []
+bot.send_photo = lambda cid, data, caption=None, reply_markup=None: \
+    photos.append((cid, data, caption)) or {"ok": True}
+
+FAKE_QR = {"qr_code_id": "qr-123", "qr_url": "https://app.binance.com/uni-qr/XYZ",
+           "pairing_code": "ab12", "expires_at_ms": int(time.time() * 1000) + 300000}
+signin_calls = []
+baw_users.signin = lambda uid: signin_calls.append(uid) or dict(FAKE_QR)
+baw_users.make_qr_png = lambda text: b"\x89PNGFAKE"
+
+client.post("/webhook", json=callback_update(111, "connect_wallet"))
+texts = texts_of(calls)
+check("connect: generating message sent",
+      any("QR বানানো হচ্ছে" in t for t in texts), str(texts))
+check("connect: QR photo sent with PNG bytes",
+      len(photos) == 1 and photos[0][1].startswith(b"\x89PNG"),
+      str(photos))
+check("connect: photo caption shows pairing code",
+      photos and "ab12" in (photos[0][2] or ""), str(photos))
+check("connect: signin called for user 111",
+      signin_calls == [111], str(signin_calls))
+rec = baw_users.get_record(111)
+check("connect: pending QR stored in state",
+      rec.get("pending_qr", {}).get("qr_code_id") == "qr-123", str(rec))
+
+# real QR generation works (PNG magic) — reload to drop the mock
+importlib.reload(baw_users)
+check("connect: real make_qr_png returns a PNG",
+      baw_users.make_qr_png("https://example.com").startswith(b"\x89PNG"))
+
+# connect again while a live QR is pending -> resends, no new signin
+bot, baw_users = load_bot(BASE_ENV)
+calls = make_calls(bot)
+client = bot.app.test_client()
+photos.clear()
+bot.send_photo = lambda cid, data, caption=None, reply_markup=None: \
+    photos.append((cid, data, caption)) or {"ok": True}
+baw_users.signin = lambda uid: signin_calls.append(uid) or dict(FAKE_QR)
+baw_users.make_qr_png = lambda text: b"\x89PNGFAKE"
+baw_users.save_record(111, {"pending_qr": {
+    "qr_code_id": "qr-123", "qr_url": FAKE_QR["qr_url"],
+    "pairing_code": "ab12",
+    "expires_at_ms": int(time.time() * 1000) + 300000}})
+n_before = len(signin_calls)
+client.post("/webhook", json=callback_update(111, "connect_wallet"))
+check("connect: live pending QR is resent, no new signin",
+      len(signin_calls) == n_before and len(photos) == 1,
+      str((signin_calls, len(photos))))
+
+# connect when already paired -> no new QR
+baw_users.save_record(111, {
+    "paired_address": "0xE012133823df5452de9c10a73fE935d26B995A97"})
+photos.clear()
+client.post("/webhook", json=callback_update(111, "connect_wallet"))
+check("connect: already paired -> no new QR, says so",
+      len(photos) == 0 and any("already connected" in t for t in texts_of(calls)))
+
+# --- E: Check status ------------------------------------------------------
+USER_ADDR = "0x1111111111111111111111111111111111111111"
+
+bot, baw_users = load_bot(BASE_ENV)
+calls = make_calls(bot)
+client = bot.app.test_client()
+photos.clear()
+bot.send_photo = lambda cid, data, caption=None, reply_markup=None: \
+    photos.append((cid, data, caption)) or {"ok": True}
+
+# E1: pending QR, verify succeeds -> paired
+baw_users.save_record(111, {"pending_qr": {
+    "qr_code_id": "qr-123", "qr_url": FAKE_QR["qr_url"],
+    "pairing_code": "ab12",
+    "expires_at_ms": int(time.time() * 1000) + 300000}})
+baw_users.verify = lambda uid, qid: {"ok": True}
+baw_users.get_address = lambda uid: USER_ADDR
+baw_users.get_agent_id = lambda uid: (True, "testuser.ai")
+baw_users.eth_get_balance = lambda addr: 10 ** 17  # 0.1 BNB
+baw_users.paid_once = lambda addr: False
+client.post("/webhook", json=callback_update(111, "check_status"))
+texts = texts_of(calls)
+check("status: verify success -> Wallet connected!",
+      any("Wallet connected!" in t for t in texts), str(texts))
+rec = baw_users.get_record(111)
+check("status: paired address stored, pending cleared",
+      rec.get("paired_address") == USER_ADDR
+      and "pending_qr" not in rec, str(rec))
+check("status: shows Agent ID",
+      any("testuser.ai" in t for t in texts), str(texts))
+
+# E2: pending QR expired -> Bengali expiry message
+baw_users.save_record(222, {"pending_qr": {
+    "qr_code_id": "qr-old", "qr_url": FAKE_QR["qr_url"],
+    "pairing_code": "ab12",
+    "expires_at_ms": int(time.time() * 1000) - 1000}})
+calls.clear()
+client.post("/webhook", json=callback_update(222, "check_status"))
+texts = texts_of(calls)
+check("status: expired QR -> Bengali expiry message",
+      any("মেয়াদ শেষ" in t and "Connect Wallet" in t for t in texts),
+      str(texts))
+check("status: expired pending cleared",
+      "pending_qr" not in baw_users.get_record(222))
+
+# E3: pending QR, not scanned yet -> "Not paired yet", pending kept
+baw_users.save_record(333, {"pending_qr": {
+    "qr_code_id": "qr-123", "qr_url": FAKE_QR["qr_url"],
+    "pairing_code": "ab12",
+    "expires_at_ms": int(time.time() * 1000) + 300000}})
+
+
+def _verify_fail(uid, qid):
+    raise baw_users.BawError("QR code not scanned")
+
+
+baw_users.verify = _verify_fail
+calls.clear()
+client.post("/webhook", json=callback_update(333, "check_status"))
+texts = texts_of(calls)
+check("status: not scanned yet -> tells user to scan first",
+      any("Not paired yet" in t for t in texts), str(texts))
+check("status: pending kept when not scanned",
+      "pending_qr" in baw_users.get_record(333))
+
+# E4: no wallet at all -> press Connect Wallet
+calls.clear()
+client.post("/webhook", json=callback_update(444, "check_status"))
+check("status: nothing paired -> says to connect",
+      any("No wallet connected yet" in t for t in texts_of(calls)))
+
+# --- F: per-user session isolation ----------------------------------------
+bot, baw_users = load_bot(BASE_ENV)
+homes_seen = []
+
+
+def _recording_run_baw(home, args, timeout=120):
+    homes_seen.append((home, list(args)))
+    if args[:2] == ["auth", "signin"]:
+        return {"qrCodeId": "qr-x", "urlForWeb": "https://app.binance.com/uni-qr/X",
+                "pairingCode": "zz99", "expireAt": str(int(time.time() * 1000) + 300000)}
+    raise AssertionError("unexpected baw call: {}".format(args))
+
+
+baw_users.run_baw = _recording_run_baw
+baw_users.signin(111)
+baw_users.signin(222)
+check("isolation: user 111 and 222 get different baw HOMEs",
+      homes_seen[0][0] != homes_seen[1][0]
+      and homes_seen[0][0].endswith("/111")
+      and homes_seen[1][0].endswith("/222"), str(homes_seen))
+
+# --- G: mint quote + confirm (mocked chain + baw) -------------------------
+bot, baw_users = load_bot(BASE_ENV)
+calls = make_calls(bot)
+client = bot.app.test_client()
+COST_10 = 78 * 10 ** 15  # 0.078 BNB
+COST_5 = 39 * 10 ** 15
+AI_BAL = {"v": 0}
+
+
+def _cost(qty):
+    return COST_10 if qty == 10 else COST_5
+
+
+baw_users.cost_of = _cost
+baw_users.total_minted = lambda: 206604
+baw_users.eth_get_balance = lambda addr: 10 ** 18  # 1 BNB
+baw_users.token_balance = lambda token, addr: AI_BAL["v"]
+baw_users.estimate_ai_received = lambda cost, qty: 11380000000000 if qty == 10 else 5690000000000
+baw_users.get_amounts_out = lambda amt, path: [amt, 76900000000000000 if amt > 10 ** 13 else 38450000000000000]
+baw_users.dev_mode_enabled = lambda uid: True
+bot.bnb_price_usd = lambda: 600.0
+baw_users.paid_once = lambda addr: False
+
+# G1: quote when not paired -> connect first
+calls.clear()
+client.post("/webhook", json=callback_update(111, "mint_10"))
+check("mint: not paired -> connect first",
+      any("No wallet connected" in t for t in texts_of(calls)))
+
+# G2: quote shows live numbers + Confirm button
+baw_users.save_record(111, {"paired_address": USER_ADDR})
+calls.clear()
+client.post("/webhook", json=callback_update(111, "mint_10"))
+texts = texts_of(calls)
+check("mint: quote shows cost 0.07800 BNB",
+      any("0.07800 BNB" in t for t in texts), str(texts))
+check("mint: quote shows expected AI + sell value",
+      any("11,380,000,000,000" in t and "0.07690" in t for t in texts),
+      str(texts))
+check("mint: quote says sell is NOT a profit",
+      any("NOT a profit" in t for t in texts), str(texts))
+btns = buttons_of(calls)
+check("mint: Confirm Mint button present",
+      any(b.get("callback_data") == "confirm_mint_10" for b in btns),
+      str(btns))
+rec = baw_users.get_record(111)
+check("mint: pending_mint stored with cost + expected start",
+      rec.get("pending_mint", {}).get("qty") == 10
+      and rec["pending_mint"]["cost_wei"] == COST_10
+      and rec["pending_mint"]["expected_start"] == 206605, str(rec))
+
+# G3: quote above the cap -> stopped
+baw_users.cost_of = lambda qty: 90 * 10 ** 15  # 0.09 BNB for 10
+calls.clear()
+client.post("/webhook", json=callback_update(111, "mint_10"))
+check("mint: cost above cap -> stopped",
+      any("above the 0.008 BNB/share cap" in t for t in texts_of(calls)))
+baw_users.cost_of = _cost
+
+# G4: insufficient BNB -> top up message
+baw_users.eth_get_balance = lambda addr: 10 ** 15  # 0.001 BNB
+calls.clear()
+client.post("/webhook", json=callback_update(111, "mint_10"))
+check("mint: insufficient BNB -> top up message",
+      any("Not enough BNB" in t for t in texts_of(calls)))
+baw_users.eth_get_balance = lambda addr: 10 ** 18
+
+# G5: Developer Mode off -> instructions, no quote
+baw_users.dev_mode_enabled = lambda uid: False
+calls.clear()
+client.post("/webhook", json=callback_update(111, "mint_10"))
+check("mint: dev mode off -> enable instructions",
+      any("Developer Mode is OFF" in t for t in texts_of(calls)))
+baw_users.dev_mode_enabled = lambda uid: True
+
+# G6: confirm -> mint + sell, tx hashes, minted_count up
+do_mint_calls = []
+baw_users.do_mint = lambda home, addr, qty, cost, start: \
+    do_mint_calls.append((home, addr, qty, cost, start)) or \
+    {"tx_hash": "0xminttxhash", "status": ""}
+sell_calls = []
+baw_users.sell_ai = lambda home, addr, amt: \
+    sell_calls.append((home, addr, amt)) or \
+    {"approve_tx": "0xapprovetx", "swap_tx": "0xswaptx",
+     "expected_bnb_wei": 76900000000000000}
+# token_balance: before mint 0, after mint the received AI
+_bal_state = {"n": 0}
+
+
+def _bal_seq(token, addr):
+    _bal_state["n"] += 1
+    return 0 if _bal_state["n"] == 1 else 11380000000000
+
+
+baw_users.token_balance = _bal_seq
+# eth_get_balance: before mint 1 BNB, after sell ~0.9985 BNB
+_bnb_state = {"n": 0}
+
+
+def _bnb_seq(addr):
+    _bnb_state["n"] += 1
+    return 10 ** 18 if _bnb_state["n"] <= 1 else 998500000000000000
+
+
+baw_users.eth_get_balance = _bnb_seq
+calls.clear()
+client.post("/webhook", json=callback_update(111, "confirm_mint_10"))
+texts = texts_of(calls)
+check("mint: confirm -> Minted 10 shares!",
+      any("Minted 10 shares!" in t for t in texts), str(texts))
+check("mint: confirm -> mint tx hash shown",
+      any("0xminttxhash" in t for t in texts), str(texts))
+check("mint: confirm -> sell reported with swap tx",
+      any("0xswaptx" in t for t in texts), str(texts))
+check("mint: do_mint used the user's HOME + address + live cost",
+      do_mint_calls and do_mint_calls[0][1] == USER_ADDR
+      and do_mint_calls[0][2] == 10 and do_mint_calls[0][3] == COST_10,
+      str(do_mint_calls))
+check("mint: sell got exactly the AI received",
+      sell_calls and sell_calls[0][2] == 11380000000000, str(sell_calls))
+rec = baw_users.get_record(111)
+check("mint: minted_count=1, pending cleared, tx stored",
+      rec.get("minted_count") == 1 and "pending_mint" not in rec
+      and rec.get("last_mint_tx") == "0xminttxhash", str(rec))
+
+# G7: confirm with expired quote -> re-quote, no mint
+baw_users.save_record(111, {"paired_address": USER_ADDR,
+                            "pending_mint": {"qty": 10, "cost_wei": COST_10,
+                                             "expected_start": 206605,
+                                             "ai_before_wei": 0,
+                                             "quoted_at": int(time.time()) - 300}})
+do_mint_calls.clear()
+calls.clear()
+client.post("/webhook", json=callback_update(111, "confirm_mint_10"))
+check("mint: expired quote -> re-quote, no mint sent",
+      not do_mint_calls and any("quote expired" in t for t in texts_of(calls)))
+
+# G8: confirm when preview/execute fails -> Mint failed, nothing counted
+baw_users.save_record(111, {"paired_address": USER_ADDR, "minted_count": 1,
+                            "pending_mint": {"qty": 5, "cost_wei": COST_5,
+                                             "expected_start": 206605,
+                                             "ai_before_wei": 0,
+                                             "quoted_at": int(time.time())}})
+
+
+def _do_mint_fail(home, addr, qty, cost, start):
+    raise baw_users.BawError("mint preview not clean (status: BLOCKED)")
+
+
+baw_users.do_mint = _do_mint_fail
+calls.clear()
+client.post("/webhook", json=callback_update(111, "confirm_mint_5"))
+texts = texts_of(calls)
+check("mint: preview failure -> Mint failed, nothing sent",
+      any("Mint failed" in t and "BLOCKED" in t for t in texts), str(texts))
+check("mint: failed mint does not count",
+      baw_users.get_record(111).get("minted_count") == 1)
+
+# G9: cancel clears the pending mint
+baw_users.save_record(111, {"paired_address": USER_ADDR,
+                            "pending_mint": {"qty": 10, "cost_wei": COST_10,
+                                             "expected_start": 206605,
+                                             "ai_before_wei": 0,
+                                             "quoted_at": int(time.time())}})
+calls.clear()
+client.post("/webhook", json=callback_update(111, "cancel_mint"))
+check("mint: cancel clears pending + says nothing sent",
+      "pending_mint" not in baw_users.get_record(111)
+      and any("nothing was sent" in t.lower() for t in texts_of(calls)))
+
+# --- H: Claim $3 -----------------------------------------------------------
+bot, baw_users = load_bot(BASE_ENV)
+calls = make_calls(bot)
+client = bot.app.test_client()
+baw_users.w1_usdt_balance_wei = lambda: 0
+baw_users.pay_claim_usdt = lambda addr, amt: "0xclaimtx"
+
+# H1: no mint yet -> needs a mint first
+baw_users.save_record(111, {"paired_address": USER_ADDR})
+calls.clear()
+client.post("/webhook", json=callback_update(111, "claim_3"))
+check("claim: no mint yet -> needs a mint first",
+      any("needs a mint first" in t for t in texts_of(calls)))
+
+# H2: minted but W1 pool empty -> plain message, claim NOT used up
+baw_users.save_record(111, {"paired_address": USER_ADDR, "minted_count": 1})
+calls.clear()
+client.post("/webhook", json=callback_update(111, "claim_3"))
+texts = texts_of(calls)
+check("claim: empty pool -> plain message + contact owner",
+      any("reward pool is empty" in t for t in texts), str(texts))
+check("claim: empty pool does NOT mark claimed",
+      baw_users.get_record(111).get("claimed") is not True)
+
+# H3: pool funded -> USDT sent, claimed marked, second claim refused
+baw_users.w1_usdt_balance_wei = lambda: 10 * 10 ** 18  # $10 USDT
+pay_calls = []
+baw_users.pay_claim_usdt = lambda addr, amt: \
+    pay_calls.append((addr, amt)) or "0xclaimtx"
+calls.clear()
+client.post("/webhook", json=callback_update(111, "claim_3"))
+texts = texts_of(calls)
+check("claim: success -> USDT sent with tx",
+      any("USDT sent" in t and "0xclaimtx" in t for t in texts), str(texts))
+check("claim: pays exactly $3 in USDT wei to the user",
+      pay_calls == [(USER_ADDR, 3 * 10 ** 18)], str(pay_calls))
+check("claim: marked claimed with tx",
+      baw_users.get_record(111).get("claimed") is True
+      and baw_users.get_record(111).get("claimed_tx") == "0xclaimtx")
+calls.clear()
+client.post("/webhook", json=callback_update(111, "claim_3"))
+check("claim: second claim refused (one per account)",
+      any("already claimed" in t for t in texts_of(calls)))
+
+# H4: claim payment failure -> claim NOT used up
+baw_users.save_record(222, {"paired_address": USER_ADDR, "minted_count": 1})
+
+
+def _pay_fail(addr, amt):
+    raise baw_users.BawError("claim preview not clean (status: BLOCKED)")
+
+
+baw_users.pay_claim_usdt = _pay_fail
+calls.clear()
+client.post("/webhook", json=callback_update(222, "claim_3"))
+texts = texts_of(calls)
+check("claim: payment failure -> not used up",
+      any("Claim failed" in t for t in texts)
+      and baw_users.get_record(222).get("claimed") is not True,
+      str(texts))
+
+# --- I: Disconnect + Help --------------------------------------------------
+bot, baw_users = load_bot(BASE_ENV)
+calls = make_calls(bot)
+client = bot.app.test_client()
+signout_calls = []
+baw_users.signout = lambda uid: signout_calls.append(uid)
+baw_users.save_record(111, {"paired_address": USER_ADDR, "minted_count": 1})
+calls.clear()
+client.post("/webhook", json=callback_update(111, "disconnect"))
+check("disconnect: signout called for the user",
+      signout_calls == [111], str(signout_calls))
+check("disconnect: state cleared + confirmed",
+      baw_users.get_record(111) == {}
+      and any("Disconnected" in t for t in texts_of(calls)))
+calls.clear()
+client.post("/webhook", json=callback_update(111, "disconnect"))
+check("disconnect: nothing connected -> says so",
+      any("No wallet is connected" in t for t in texts_of(calls)))
+calls.clear()
+client.post("/webhook", json=callback_update(111, "help"))
+texts = texts_of(calls)
+check("help: explains Connect Wallet + Developer Mode",
+      any("Connect Wallet" in t and "Developer Mode" in t for t in texts),
+      str(texts))
+
+# --- J: balance + tasks (kept from before) ---------------------------------
+bot, baw_users = load_bot(BASE_ENV)
+calls = make_calls(bot)
+client = bot.app.test_client()
 bot.bnb_balance = lambda addr: 0.1
 bot.bnb_price_usd = lambda: 500.0
-client.post("/webhook", json={
-    "update_id": 2,
-    "callback_query": {"id": "q1", "from": {"id": 111},
-                       "message": {"chat": {"id": 111}},
-                       "data": "check_balance"}})
+client.post("/webhook", json=callback_update(111, "check_balance"))
 client.post("/webhook", json={
     "update_id": 3,
     "message": {"message_id": 2, "chat": {"id": 111},
                 "from": {"id": 111},
                 "text": "0xE012133823df5452de9c10a73fE935d26B995A97"}})
-texts = [p["text"] for m, p in calls if m == "sendMessage"]
+texts = texts_of(calls)
 check("balance: eligible at $50 vs $41 min",
       any("Eligible" in t and "$50.00" in t for t in texts), str(texts))
-
-# 0.01 BNB at $500 = $5 -> not eligible
 calls.clear()
-bot.bnb_balance = lambda addr: 0.01
-client.post("/webhook", json={
-    "update_id": 4,
-    "callback_query": {"id": "q2", "from": {"id": 111},
-                       "message": {"chat": {"id": 111}},
-                       "data": "check_balance"}})
-client.post("/webhook", json={
-    "update_id": 5,
-    "message": {"message_id": 3, "chat": {"id": 111},
-                "from": {"id": 111},
-                "text": "0xE012133823df5452de9c10a73fE935d26B995A97"}})
-texts = [p["text"] for m, p in calls if m == "sendMessage"]
-check("balance: not eligible at $5 vs $41 min",
-      any("Not eligible" in t and "$5.00" in t for t in texts), str(texts))
-
-# invalid address -> asked again, no crash
-calls.clear()
-client.post("/webhook", json={
-    "update_id": 6,
-    "callback_query": {"id": "q3", "from": {"id": 111},
-                       "message": {"chat": {"id": 111}},
-                       "data": "check_balance"}})
-client.post("/webhook", json={
-    "update_id": 7,
-    "message": {"message_id": 4, "chat": {"id": 111},
-                "from": {"id": 111}, "text": "not-an-address"}})
-texts = [p["text"] for m, p in calls if m == "sendMessage"]
-check("balance: invalid address rejected",
-      any("does not look like" in t for t in texts), str(texts))
-
-# --- E: tasks with no channels configured ----------------------------------
-calls.clear()
-client.post("/webhook", json={
-    "update_id": 8,
-    "callback_query": {"id": "q4", "from": {"id": 111},
-                       "message": {"chat": {"id": 111}},
-                       "data": "tasks"}})
-texts = [p["text"] for m, p in calls if m == "sendMessage"]
+client.post("/webhook", json=callback_update(111, "tasks"))
 check("tasks: no channels -> optional, can mint now",
-      any("optional" in t and "You can mint now" in t for t in texts),
-      str(texts))
+      any("optional" in t and "You can mint now" in t for t in texts_of(calls)))
 
-# --- F: owner contact + join channel button ------------------------------
-bot, calls, client = run_scenario(
-    "owner-channel",
-    {"BOT_TOKEN": "test-token",
-     "MINT_URL": "https://example.com/mint?ref=TESTCODE&qty={qty}",
-     "MIN_BNB_USD": "41", "TASK_CHANNELS": "",
-     "CHANNEL_INVITE_URL": "https://t.me/+s2WrevCJwkFkOTVl",
-     "OWNER_CONTACT": "@imzaman7",
-     "REWARD_TEXT": "$3 per account"},
-    "https://example.com/mint?ref=TESTCODE&qty=5",
-    "https://example.com/mint?ref=TESTCODE&qty=10")
-texts = [p["text"] for m, p in calls if m == "sendMessage"]
-check("owner: welcome shows Owner @imzaman7",
-      any("Owner: @imzaman7" in t for t in texts), str(texts))
-btns = buttons_of(calls)
-check("owner: Join Channel button with invite URL",
-      any(b.get("text") == bot._bold("Join Channel")
-          and b.get("url") == "https://t.me/+s2WrevCJwkFkOTVl"
-          for b in btns), str(btns))
-check("owner: welcome bolds the button names",
-      any("<b>Mint 5</b>" in t and "<b>Check Balance</b>" in t
-          for t in texts), str(texts))
-
-# --- G: polling mode dispatches a /start update -------------------------
-bot = load_bot({"BOT_TOKEN": "test-token",
-                "MINT_URL": "https://example.com/mint?ref=X&qty={qty}",
-                "MIN_BNB_USD": "41", "TASK_CHANNELS": "",
-                "CHANNEL_INVITE_URL": "https://t.me/+s2WrevCJwkFkOTVl",
-                "OWNER_CONTACT": "@imzaman7"})
-calls = []
+# --- K: polling mode dispatches a /start update -------------------------
+bot, baw_users = load_bot(BASE_ENV)
+calls = make_calls(bot)
 poll_state = {"n": 0}
 
 
@@ -239,79 +627,12 @@ try:
     bot.run_polling()
 except SystemExit:
     pass
-texts = [p["text"] for m, p in calls if m == "sendMessage"]
+texts = texts_of(calls)
 check("polling: /start update answered with welcome",
       any("Welcome" in t and "Owner: @imzaman7" in t for t in texts),
       str(texts))
 check("polling: stale webhook cleared first",
       calls and calls[0][0] == "deleteWebhook", str(calls[:1]))
-
-# --- H: own mint page (/mint) ----------------------------------------------
-MINT_CONTRACT = "0xa4bFa31f615F8e2a13dce3d93C0996CC5a56763D"
-REFERRER_W1 = "0xE012133823df5452de9c10a73fE935d26B995A97"
-
-bot = load_bot({"BOT_TOKEN": "test-token", "MINT_URL": "",
-                "WEBHOOK_URL": "https://mintbot-xxxx.onrender.com",
-                "WC_PROJECT_ID": "", "ENABLE_INSTANT_SELL": ""})
-client = bot.app.test_client()
-
-resp = client.get("/mint?qty=5")
-page5 = resp.get_data(as_text=True)
-check("mint page: /mint?qty=5 returns 200",
-      resp.status_code == 200, str(resp.status_code))
-check("mint page: contains the mint contract address",
-      MINT_CONTRACT in page5)
-check("mint page: contains the W1 referrer",
-      REFERRER_W1 in page5)
-check("mint page: warns to use a regular wallet, not a baw agent wallet",
-      "MetaMask" in page5 and "Agentic Wallet" in page5
-      and "disconnect" in page5.lower())
-check("mint page: warns wallet needs a .ai Agent ID and BNB for cost + gas",
-      ".ai Agent ID" in page5 and "enough BNB" in page5)
-check("mint page: WC unset -> 'not configured' warning shown",
-      '<div class="error"><b>Wallet connect is not configured yet.</b>' in page5)
-check("mint page: instant sell off by default",
-      "enableInstantSell: false" in page5)
-
-resp = client.get("/mint?qty=10")
-page10 = resp.get_data(as_text=True)
-check("mint page: /mint?qty=10 returns 200",
-      resp.status_code == 200, str(resp.status_code))
-check("mint page: qty=10 shows 10 shares",
-      "Mint 10 Agent ID" in page10)
-check("mint page: qty=10 cap is 0.08 BNB",
-      '"0.08"' in page10 or "0.08" in page10)
-
-resp = client.get("/mint?qty=7")
-check("mint page: /mint?qty=7 returns 400",
-      resp.status_code == 400, str(resp.status_code))
-
-bot = load_bot({"BOT_TOKEN": "test-token", "MINT_URL": "",
-                "WEBHOOK_URL": "https://mintbot-xxxx.onrender.com",
-                "WC_PROJECT_ID": "test-project-id",
-                "ENABLE_INSTANT_SELL": "1"})
-client = bot.app.test_client()
-resp = client.get("/mint?qty=5")
-page_wc = resp.get_data(as_text=True)
-check("mint page: WC set -> no 'not configured' warning",
-      '<div class="error"><b>Wallet connect is not configured yet.</b>' not in page_wc)
-check("mint page: instant sell on when ENABLE_INSTANT_SELL=1",
-      "enableInstantSell: true" in page_wc)
-check("mint page: no hardcoded bot token in page",
-      "test-token" not in page_wc)
-
-# --- I: Mint buttons point at the bot's own /mint page --------------------
-# WEBHOOK_URL set, no MINT_URL: buttons use {WEBHOOK_URL}/mint?qty=N.
-run_scenario(
-    "own-mint-page",
-    {"BOT_TOKEN": "test-token",
-     "MINT_URL": "",
-     "MIN_BNB_USD": "41", "TASK_CHANNELS": "",
-     "WEBHOOK_URL": "https://mintbot-xxxx.onrender.com",
-     "REWARD_TEXT": "$3 per account"},
-    "https://mintbot-xxxx.onrender.com/mint?qty=5",
-    "https://mintbot-xxxx.onrender.com/mint?qty=10")
-# Fallback is covered by scenarios A/B above (no WEBHOOK_URL -> MINT_URL).
 
 print()
 if FAILURES:
