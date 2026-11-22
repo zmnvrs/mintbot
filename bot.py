@@ -1291,6 +1291,23 @@ def index():
     return jsonify({"status": "ok", "service": "mintbot"})
 
 
+@app.route("/static/<path:filename>", methods=["GET"])
+def static_files(filename):
+    """Serve the mini app's wallet libraries (ethers + the WC provider).
+
+    Served locally from the project's static/ dir (same origin) so
+    the page does not depend on a public CDN.
+    """
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+    path = os.path.normpath(os.path.join(base, filename))
+    if not path.startswith(base) or not os.path.isfile(path):
+        return "Not found", 404
+    mimetype = "application/javascript" if path.endswith(".js") else None
+    with open(path, "rb") as fh:
+        data = fh.read()
+    return data, 200, {"Content-Type": mimetype or "application/octet-stream"}
+
+
 @app.route("/mint-app", methods=["GET"])
 def mint_app():
     """Serve the Telegram Web App mini app (direct wallet mint).
