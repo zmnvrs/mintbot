@@ -143,19 +143,6 @@ def send_photo(chat_id, photo_bytes, caption=None, reply_markup=None):
         return None
 
 
-def send_sticker(chat_id, sticker):
-    """Send a sticker by file_id (e.g. the animated redpack box)."""
-    return tg("sendSticker", {"chat_id": chat_id, "sticker": sticker})
-
-
-# Animated redpack (mystery box) sticker from the user's own pack
-# (ugrjfy_conv_cqxdeh_e_my_channel_ecbec05e60_bl_by_emojimagentabot).
-# It is a regular animated sticker, not a custom emoji, so it is sent as
-# a sticker message (it cannot sit inside a button or message text).
-REDPACK_STICKER = ("CAACAgUAAxUAAWsCy_hy7dfjnYUabl1altfn9ZqcAAJXJgACHZMQVME"
-                   "pAAFGr7pSyj0E")
-
-
 def answer_callback(callback_query_id, text=None):
     payload = {"callback_query_id": callback_query_id}
     if text:
@@ -182,6 +169,14 @@ def _bold(text):
     return "".join(out)
 
 
+# Premium animated emojis from the user's own custom-emoji pack
+# (cqxdeh_e_my_channel_ecbec05e60_bls4x_by_emojimagentabot, via
+# t.me/addemoji). Shown before the button text via icon_custom_emoji_id.
+# They render only if the bot owner has Telegram Premium.
+EMOJI_SHIELD = "6053310040645837526"  # first emoji: red CRYPTO CRAVERS shield
+EMOJI_BOX = "6053011205411317266"     # box emoji: black mystery box
+
+
 def main_keyboard():
     """Inline keyboard — the admin bot's seven buttons, then the rest."""
     rows = [
@@ -189,12 +184,14 @@ def main_keyboard():
          {"text": _bold("Check status"), "callback_data": "check_status"}],
         [{"text": _bold("Mint Ten Share"), "callback_data": "mint_10"},
          {"text": _bold("Mint Five Share"), "callback_data": "mint_5"}],
-        [{"text": _bold("🧧 Claim $3"), "callback_data": "claim_3"}],
+        [{"text": _bold("Claim $3"), "callback_data": "claim_3",
+          "icon_custom_emoji_id": EMOJI_BOX}],
         [{"text": _bold("Help"), "callback_data": "help"},
          {"text": _bold("Disconnect"), "callback_data": "disconnect"}],
     ]
     if CHANNEL_INVITE_URL:
-        rows.append([{"text": _bold("📢 Join Channel"), "url": CHANNEL_INVITE_URL}])
+        rows.append([{"text": _bold("Join Channel"), "url": CHANNEL_INVITE_URL,
+                     "icon_custom_emoji_id": EMOJI_SHIELD}])
     rows.append([
         {"text": _bold("Check Balance"), "callback_data": "check_balance"},
         {"text": _bold("Tasks"), "callback_data": "tasks"},
@@ -725,7 +722,6 @@ def handle_claim(chat_id, user_id):
     record["claimed"] = True
     record["claimed_tx"] = tx_hash
     _save_record(user_id, record)
-    send_sticker(chat_id, REDPACK_STICKER)
     send_message(
         chat_id,
         "✅ ${:.2f} USDT sent to <code>{}</code>!\n\n"
@@ -738,7 +734,6 @@ def handle_claim(chat_id, user_id):
 def handle_start(chat_id, first_name=""):
     user_state.pop(chat_id, None)
     greeting = "Hi {}!\n\n".format(first_name) if first_name else ""
-    send_sticker(chat_id, REDPACK_STICKER)
     send_message(chat_id, greeting + welcome_text(), main_keyboard())
 
 
