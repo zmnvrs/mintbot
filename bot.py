@@ -211,15 +211,12 @@ def _bold(text):
 def _mint_button(qty):
     """The Mint button for qty shares.
 
-    When MINI_APP_URL is set it opens the Telegram Web App mini app
-    (direct wallet mint, no baw preview). Otherwise it is a
-    plain callback button for the baw quote/confirm fallback flow.
+    Plain callback button for the baw quote/confirm flow (the
+    earlier system). The Web App mini app is OFF — the owner
+    found it added hassle (a separate wallet connect that did
+    not work), so Mint goes back to the bot's own flow.
     """
     label = "💰 Mint Ten Share" if qty == 10 else "💎 Mint Five Share"
-    if MINI_APP_URL:
-        url = "{}mint-app?qty={}".format(
-            MINI_APP_URL.rstrip("/") + "/", qty)
-        return {"text": _bold(label), "web_app": {"url": url}}
     return {"text": _bold(label),
             "callback_data": "mint_{}".format(qty)}
 

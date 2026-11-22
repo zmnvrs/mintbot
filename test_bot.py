@@ -912,22 +912,22 @@ check("slots: no slots -> no Confirm button, no pending mint",
       and "pending_mint" not in baw_users.get_record(111),
       str(buttons_of(calls)))
 
-# N4: Mint buttons are Web App buttons when MINI_APP_URL is set.
+# N4: Mint buttons are plain callback buttons (baw flow) even when
+# MINI_APP_URL is set — the mini app is OFF (owner's call: it added
+# hassle, a separate wallet connect that did not work).
 bot, baw_users = load_bot(dict(BASE_ENV, MINI_APP_URL="https://example.onrender.com"))
 calls = make_calls(bot)
 client = bot.app.test_client()
 client.post("/webhook", json=start_update())
 btns = buttons_of(calls)
 by_label = {b.get("text"): b for b in btns}
-check("miniapp: mint buttons are Web App buttons when URL is set",
-      "web_app" in by_label.get(bot._bold("💰 Mint Ten Share"), {})
-      and "web_app" in by_label.get(bot._bold("💎 Mint Five Share"), {}),
-      str(btns))
-check("miniapp: Web App URL has the mint-app path + qty",
-      by_label.get(bot._bold("💰 Mint Ten Share"), {}).get("web_app", {}).get("url")
-      == "https://example.onrender.com/mint-app?qty=10"
-      and by_label.get(bot._bold("💎 Mint Five Share"), {}).get("web_app", {}).get("url")
-      == "https://example.onrender.com/mint-app?qty=5",
+check("miniapp: mint buttons are callback buttons even when URL is set",
+      by_label.get(bot._bold("💰 Mint Ten Share"), {}).get("callback_data")
+      == "mint_10"
+      and by_label.get(bot._bold("💎 Mint Five Share"), {}).get("callback_data")
+      == "mint_5"
+      and "web_app" not in by_label.get(bot._bold("💰 Mint Ten Share"), {})
+      and "web_app" not in by_label.get(bot._bold("💎 Mint Five Share"), {}),
       str(btns))
 check("miniapp: other buttons stay callback buttons",
       by_label.get(bot._bold("🔗 Connect Wallet"), {}).get("callback_data")
