@@ -610,6 +610,10 @@ texts = texts_of(calls)
 check("help: explains Connect Wallet + Developer Mode",
       any("Connect Wallet" in t and "Developer Mode" in t for t in texts),
       str(texts))
+btns = buttons_of(calls)
+check("help: Message Owner button opens t.me/imzaman7",
+      any(b.get("url") == "https://t.me/imzaman7" for b in btns),
+      str(btns))
 
 # --- J: balance + tasks (kept from before) ---------------------------------
 bot, baw_users = load_bot(BASE_ENV)

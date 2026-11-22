@@ -214,6 +214,21 @@ def main_keyboard():
     return {"inline_keyboard": rows}
 
 
+def help_keyboard():
+    """Help keyboard: the main menu plus a Message Owner button.
+
+    Tapping it opens a chat with the owner (@imzaman7) in Telegram,
+    so users can message the owner directly for help.
+    """
+    rows = []
+    if OWNER_CONTACT:
+        handle = OWNER_CONTACT.lstrip("@")
+        rows.append([{"text": _bold("💬 Message Owner ({})".format(
+            OWNER_CONTACT)), "url": "https://t.me/{}".format(handle)}])
+    rows.extend(main_keyboard()["inline_keyboard"])
+    return {"inline_keyboard": rows}
+
+
 def welcome_text():
     text = (
         "👋 <b>Welcome to Free Mint Crypto Cravers!</b>\n\n"
@@ -253,12 +268,14 @@ def help_text():
         "4️⃣ 🎁 <b>Claim $3</b> — after your first mint through the bot, "
         "one $3 USDT claim per account.\n\n"
         "5️⃣ 🚫 <b>Disconnect</b> — unpairs your wallet from the bot.\n\n"
+        "💬 <b>Need help?</b> Tap the Message Owner button below to "
+        "message the owner ({}) directly.\n\n"
         "⚠️ You need: a .ai Agent ID in your wallet, enough BNB for the "
         "mint cost + gas, and Developer Mode ON in your Agentic "
         "Wallet settings (Binance app → Agentic Wallet → Settings → "
         "Developer Mode). Your wallet is only ever used when YOU tap "
         "a button — the bot never mints or moves funds on its own."
-    )
+    ).format(OWNER_CONTACT or "the owner")
 
 
 # ---------------------------------------------------------- balance check
@@ -894,7 +911,7 @@ def handle_callback(query):
         handle_claim(chat_id, user_id)
         return
     if data == "help":
-        send_message(chat_id, help_text(), main_keyboard())
+        send_message(chat_id, help_text(), help_keyboard())
         return
     if data == "disconnect":
         handle_disconnect(chat_id, user_id)
