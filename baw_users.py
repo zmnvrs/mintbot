@@ -658,8 +658,12 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
             msg = str(exc)
             last_err = "[{} stage, attempt {}/{}] {}".format(
                 stage, attempt, MINT_PREVIEW_ATTEMPTS, msg)
+            # A "simulation" failure means baw refused before signing,
+            # so nothing was broadcast and a retry cannot double-mint.
+            low = msg.lower()
             safe_to_retry = (stage in ("read", "preview")
-                             or "351805" in msg)
+                             or "351805" in msg or "953401" in msg
+                             or "simulation" in low)
             if safe_to_retry and attempt < MINT_PREVIEW_ATTEMPTS:
                 time.sleep(1)
                 continue
