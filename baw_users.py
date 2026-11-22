@@ -599,84 +599,80 @@ def mint_calldata(qty, max_cost_wei, expected_start, deadline):
         [qty, REFERRER_W1, max_cost_wei, expected_start, 0, deadline])
 
 
-# Retry window for a mint, in seconds (30 minutes — per the mint
-# prompt: "Keep retrying for up to 30 minutes" on BadStart /
-# execution-reverted, re-reading totalMinted + costOf fresh each
-# time). The old 4-attempt loop gave up after ~30 seconds; a
-# fast-moving pool needs far longer. (2026-11-22: prompt input.)
-MINT_RETRY_SECONDS = 1800
-# maxCost headroom over the live costOf, in basis points (1%): the
-# pool moves fast — the price rises during the slow (~5s) baw
-# preview, so an exact maxCost is already too low by simulation
-# time and the preview fails (351805/953401), forcing retries.
-# A 1% buffer lets the preview pass on the FIRST try (instant,
-# like the other bot) by absorbing the price rise inside the
-# preview window. Both the calldata maxCost AND the BNB sent
-# (value) carry the buffer, so a rise never makes msg.value
-# short either. Cost: at most ~1% overpay (~0.0004 BNB on a
-# 5-share mint) if the price does not rise. (2026-11-22: instant fix.)
-MINT_MAX_COST_BPS = 100
+# Preview attempts per mint (each with a fresh total + cost read).
+MINT_PREVIEW_ATTEMPTS = 4
+# maxCost headroom over the live costOf, in basis points (0.5%): the
+# price rises while many people mint, so an exact maxCost can be too
+# low by the time the slow (~5s) baw preview simulates. But a big
+# buffer breaks tight balances — the preview checks balance against
+# maxCost + gas, and a 2% buffer pushed maxCost above a 0.03998 BNB
+# balance for a 0.0396 BNB mint (baw 351805 "insufficient native
+# token balance"). 0.5% is enough for the preview window and stays
+# under a tight balance. (2026-11-22: tight-balance fix.)
+MINT_MAX_COST_BPS = 50
 
 
 def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
     """Preview + execute one mint. Returns {"tx_hash", "status"}.
 
-    The pool moves fast and the contract checks expected_start (BadStart
-    revert) and maxCost, so a preview built on stale numbers reverts
-    (baw error 351805). Each attempt re-reads totalMinted AND costOf
-    fresh, uses expected_start == fresh total + 1 exactly (no ahead
-    buffer — the contract wants the live index), and sets the calldata
-    maxCost AND the BNB sent (value) to the live cost + 1% — the
-    buffer absorbs the price rise inside the slow (~5s) preview so
-    it passes on the FIRST try (instant, like the other bot). On
-    BadStart / execution-reverted / simulation error — whether the
-    PREVIEW or the EXECUTE fails — re-read fresh and retry the whole
-    preview+execute cycle for up to 30 minutes (MINT_RETRY_SECONDS).
-    Raises BawError on any failure.
+    FIX (2026-11-22):
+      * msg.value is now the LIVE cost (costOf), NOT the padded maxCost.
+        The 0.5% padding goes only into the maxCost calldata argument
+        (slippage guard). Sending the padded amount as value made the
+        call revert when the contract wants value == cost, and it also
+        pushed tight balances over the edge.
+      * Preview AND execute are inside one retry loop. baw simulates
+        again at execute time; if another user minted in between,
+        expected_start (totalMinted + 1) is stale and the contract
+        reverts. Each retry re-reads totalMinted + costOf fresh.
+      * Retrying is only done when nothing could have been broadcast:
+        preview errors, or an execute error that is explicitly a
+        simulation failure (351805). Any other execute error is raised
+        immediately so a mint can never be sent twice.
+      * Errors say WHICH stage failed (read / preview / execute).
     """
-    def _attempt(start, max_cost_wei, value_wei, gas_limit=None):
-        deadline = int(time.time()) + 600
-        data = mint_calldata(qty, max_cost_wei, start, deadline)
-        prev = preview(home, from_addr, MINT_CONTRACT, value_wei, data,
-                       gas_limit=gas_limit)
-        if not preview_is_clean(prev):
-            raise BawError("mint preview not clean (status: {}). "
-                           "Not minting.".format(prev.get("status") or "unknown"))
-        return prev
-
     last_err = None
-    retry_deadline = time.time() + MINT_RETRY_SECONDS
-    while True:
+    for attempt in range(1, MINT_PREVIEW_ATTEMPTS + 1):
+        stage = "read"
         try:
-            # Fresh reads right before this attempt — never reuse the
-            # quote's cost or a previous attempt's total.
             fresh_total = total_minted()
             fresh_cost = cost_of(qty)
+            if fresh_cost > qty * MAX_COST_PER_SHARE_WEI:
+                raise BawError("live cost {} wei is above the price cap; "
+                               "not minting".format(fresh_cost))
             max_cost = fresh_cost * (10000 + MINT_MAX_COST_BPS) // 10000
             start = fresh_total + 1
-            # No explicit gas limit: the backend estimates the real gas
-            # (~200-250k). An explicit 400k cap inflated the preview's
-            # balance check (value + gas_limit * gas_price) and pushed
-            # tight balances over the edge (351805).
-            # Value sent = maxCost (both carry the 1% buffer) so a
-            # price rise inside the preview never makes msg.value
-            # short — the preview passes first try (instant).
-            prev = _attempt(start, max_cost, max_cost)
+            deadline = int(time.time()) + 600
+            data = mint_calldata(qty, max_cost, start, deadline)
+
+            stage = "preview"
+            prev = preview(home, from_addr, MINT_CONTRACT, fresh_cost, data)
+            if not preview_is_clean(prev):
+                raise BawError("mint preview not clean (status: {}). "
+                               "Not minting.".format(
+                                   prev.get("status") or "unknown"))
+
+            stage = "execute"
             result = execute(home, prev["request_id"])
-            if not result.get("tx_hash"):
-                raise BawError(
-                    "mint execute returned no tx hash (status: {}). The "
-                    "mint may need confirmation in the Binance app — "
-                    "check status and try again.".format(
-                        result.get("status") or "unknown"))
-            return result
         except BawError as exc:
-            last_err = exc
-            if time.time() >= retry_deadline:
-                raise BawError(
-                    "mint failed after 30 minutes of retries: {}"
-                    .format(last_err))
-            time.sleep(2)
+            msg = str(exc)
+            last_err = "[{} stage, attempt {}/{}] {}".format(
+                stage, attempt, MINT_PREVIEW_ATTEMPTS, msg)
+            safe_to_retry = (stage in ("read", "preview")
+                             or "351805" in msg)
+            if safe_to_retry and attempt < MINT_PREVIEW_ATTEMPTS:
+                time.sleep(1)
+                continue
+            raise BawError(last_err)
+        if not result.get("tx_hash"):
+            # Do NOT retry: the mint may be waiting for approval in the
+            # Binance app and a retry could mint twice.
+            raise BawError(
+                "mint execute returned no tx hash (status: {}). The mint "
+                "may need confirmation in the Binance app — check status "
+                "and try again.".format(result.get("status") or "unknown"))
+        return result
+    raise BawError(last_err or "mint failed")
 
 
 def sell_ai(home, from_addr, ai_amount_wei):
