@@ -368,6 +368,7 @@ baw_users.token_balance = lambda token, addr: AI_BAL["v"]
 baw_users.estimate_ai_received = lambda cost, qty: 11380000000000 if qty == 10 else 5690000000000
 baw_users.get_amounts_out = lambda amt, path: [amt, 76900000000000000 if amt > 10 ** 13 else 38450000000000000]
 baw_users.dev_mode_enabled = lambda uid: True
+baw_users.get_agent_id = lambda uid: (True, "testuser.ai")
 bot.bnb_price_usd = lambda: 600.0
 baw_users.paid_once = lambda addr: False
 baw_users.estimate_mint_gas_wei = lambda: 20 * 10 ** 12  # 0.00002 BNB gas
@@ -763,8 +764,8 @@ check("mint: stale start -> do_mint retries once and succeeds",
       _res.get("tx_hash") == "0xfreshmint" and len(_preview_calls) == 2,
       str(_preview_calls))
 # The retry calldata must encode the fresh start EXACTLY (300000 + 1,
-# no ahead buffer), maxCost 0.5% above the fresh cost, and the preview
-# value as the EXACT fresh cost (decoupled, for tight balances).
+# no ahead buffer), maxCost = the fresh cost exactly (no buffer, per
+# the mint prompt), and the preview value as the same exact cost.
 from eth_abi import decode as _dec
 _retry_value, _retry_data = _preview_calls[1]
 _retry_args = _dec(["uint256", "address", "uint256", "uint256",
@@ -774,8 +775,8 @@ check("mint: retry calldata uses fresh expected_start (no buffer)",
       _retry_args[3] == 300000 + 1
       and _retry_args[0] == 5,
       str(_retry_args))
-check("mint: retry maxCost is fresh cost + 0.5% (calldata), value is exact cost",
-      _retry_args[2] == (39 * 10 ** 15) * 10050 // 10000
+check("mint: retry maxCost is fresh cost exactly (calldata), value is exact cost",
+      _retry_args[2] == (39 * 10 ** 15)
       and _retry_value == (39 * 10 ** 15),
       str((_retry_args[2], _retry_value)))
 

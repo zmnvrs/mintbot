@@ -863,6 +863,47 @@ def handle_mint_confirm(chat_id, user_id, qty):
                 "Ten Share" if qty == 10 else "Five Share"),
             main_keyboard())
         return
+    # Prompt checks before sending (the mint prompt's CHECKS section):
+    # 1. wallet owns an Agent ID; 2. never minted before (paidOnce
+    # false); 3. BNB >= maxCost + 0.001 for gas. Stop if any fails.
+    try:
+        claimed, agent_id = baw_users.get_agent_id(user_id)
+        already_minted = baw_users.paid_once(address)
+        bnb_wei = baw_users.eth_get_balance(address)
+    except BawError as exc:
+        record.pop("pending_mint", None)
+        _save_record(user_id, record)
+        send_message(chat_id,
+                     "Could not verify the wallet ({}). Mint stopped "
+                     "— nothing was sent.".format(exc),
+                     main_keyboard())
+        return
+    if not agent_id:
+        record.pop("pending_mint", None)
+        _save_record(user_id, record)
+        send_message(chat_id,
+                     "No Agent ID found in this wallet — the mint needs "
+                     "a .ai Agent ID. Mint stopped — nothing was sent.",
+                     main_keyboard())
+        return
+    if already_minted:
+        record.pop("pending_mint", None)
+        _save_record(user_id, record)
+        send_message(chat_id,
+                     "This wallet already minted Agent ID before "
+                     "(paidOnce is true). Mint stopped — nothing was sent.",
+                     main_keyboard())
+        return
+    if bnb_wei < cost_wei + 10 ** 15:
+        record.pop("pending_mint", None)
+        _save_record(user_id, record)
+        send_message(chat_id,
+                     "BNB kom ache — mint er jonno {} BNB + gas lagbe, "
+                     "wallet e ache {} BNB. Mint stopped — nothing was "
+                     "sent.".format(_fmt_bnb(cost_wei),
+                                   _fmt_bnb(bnb_wei)),
+                     main_keyboard())
+        return
     send_message(chat_id, "⏳ Mint করা হচ্ছে...")
     try:
         ai_before = baw_users.token_balance(baw_users.AI_TOKEN, address)
