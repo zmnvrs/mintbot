@@ -773,9 +773,9 @@ check("mint: retry calldata uses fresh expected_start (no buffer)",
       _retry_args[3] == 300000 + 1
       and _retry_args[0] == 5,
       str(_retry_args))
-check("mint: retry maxCost is fresh cost + 2%",
-      _retry_args[2] == (39 * 10 ** 15) * 102 // 100
-      and _retry_value == (39 * 10 ** 15) * 102 // 100,
+check("mint: retry maxCost is fresh cost + 0.5%",
+      _retry_args[2] == (39 * 10 ** 15) * 10050 // 10000
+      and _retry_value == (39 * 10 ** 15) * 10050 // 10000,
       str(_retry_args[2]))
 
 # --- N: slots + mini app (direct WalletConnect mint) --------------------

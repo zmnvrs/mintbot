@@ -601,11 +601,15 @@ def mint_calldata(qty, max_cost_wei, expected_start, deadline):
 
 # Preview attempts per mint (each with a fresh total + cost read).
 MINT_PREVIEW_ATTEMPTS = 4
-# maxCost headroom over the live costOf, in basis points (2%): the
-# price rises fast while many people mint, so an exact maxCost is
-# already too low by the time the slow (~5s) baw preview simulates
-# (Grok's diagnosis 2026-11-22: BadStart / stale expectedStart).
-MINT_MAX_COST_BPS = 200
+# maxCost headroom over the live costOf, in basis points (0.5%): the
+# price rises while many people mint, so an exact maxCost can be too
+# low by the time the slow (~5s) baw preview simulates. But a big
+# buffer breaks tight balances — the preview checks balance against
+# maxCost + gas, and a 2% buffer pushed maxCost above a 0.03998 BNB
+# balance for a 0.0396 BNB mint (baw 351805 "insufficient native
+# token balance"). 0.5% is enough for the preview window and stays
+# under a tight balance. (2026-11-22: tight-balance fix.)
+MINT_MAX_COST_BPS = 50
 
 
 def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
@@ -640,7 +644,11 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
             fresh_cost = cost_of(qty)
             max_cost = fresh_cost * (10000 + MINT_MAX_COST_BPS) // 10000
             start = fresh_total + 1
-            prev = _attempt(start, max_cost, gas_limit=400000)
+            # No explicit gas limit: the backend estimates the real gas
+            # (~200-250k). An explicit 400k cap inflated the preview's
+            # balance check (value + gas_limit * gas_price) and pushed
+            # tight balances over the edge (351805).
+            prev = _attempt(start, max_cost)
             break
         except BawError as exc:
             last_err = exc
