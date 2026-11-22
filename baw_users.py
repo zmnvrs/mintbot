@@ -416,8 +416,9 @@ def total_minted():
 
 
 # Total Agent ID shares ever mintable (verified on-chain via
-# TOTAL_SHARES()). The mint's "slots" are shares: slots left =
-# TOTAL_SHARES - totalMinted.
+# TOTAL_SHARES()). The GLOBAL supply is only a secondary value — the
+# slots the bot shows are W1's REFERRAL slots (referral_slots() below),
+# not TOTAL_SHARES - totalMinted.
 TOTAL_SHARES = 4440000
 
 
@@ -432,7 +433,11 @@ def total_shares():
 
 
 def slots_left():
-    """Mint slots still available (shares left to mint)."""
+    """Global mint slots still available (TOTAL_SHARES - totalMinted).
+
+    Secondary value only — the quote and the mint-block use W1's
+    REFERRAL slots (referral_slots_left), not this.
+    """
     return max(0, total_shares() - total_minted())
 
 
@@ -460,6 +465,41 @@ def referral_stats(address=W1_ADDRESS):
         except BawError:
             stats[key] = None
     return stats
+
+
+def _call_id_uint(fn_sig, rid):
+    """One uint256->uint256 contract read (quotaOf / mintedCount / ...)."""
+    raw = eth_call(MINT_CONTRACT,
+                   _calldata(fn_sig, ["uint256"], [rid]))
+    return decode(["uint256"], bytes.fromhex(raw[2:]))[0]
+
+
+def referral_id_of(address=W1_ADDRESS):
+    """The referrer id (keccak256 hash as uint256) for an address."""
+    raw = eth_call(MINT_CONTRACT,
+                   _calldata("referrerIdOf(address)", ["address"], [address]))
+    return decode(["uint256"], bytes.fromhex(raw[2:]))[0]
+
+
+def referral_slots(address=W1_ADDRESS):
+    """W1's REFERRAL slots: (total, minted, left).
+
+    total = quotaOf(referrerIdOf(W1)), minted = mintedCount(...),
+    left = total - minted, clamped at 0. NOTE: extraQuota is NOT the
+    remaining — it happens to equal quota-minted right now only
+    because mintedCount == BASE_PER_ID (10). Always compute
+    remaining = quotaOf - mintedCount. (Live 2026-11-22: quota 2199,
+    minted 10, left 2189.)
+    """
+    rid = referral_id_of(address)
+    total = _call_id_uint("quotaOf(uint256)", rid)
+    minted = _call_id_uint("mintedCount(uint256)", rid)
+    return total, minted, max(0, total - minted)
+
+
+def referral_slots_left(address=W1_ADDRESS):
+    """W1's referral slots still available (quotaOf - mintedCount)."""
+    return referral_slots(address)[2]
 
 
 def paid_once(address):

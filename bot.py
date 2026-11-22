@@ -22,9 +22,10 @@ the mini app reports the tx hash back to the bot, which records it
 and immediately sells the AI just minted (instant reward) via baw.
 If MINI_APP_URL is not set, the Mint buttons fall back to the old
 baw quote/confirm flow (kept for when the mini app has no public
-URL yet). The mini app also shows the live mint slots (shares left)
-and the W1 referral state, and blocks the mint when no slots are
-left so nobody loses gas on a sold-out mint.
+URL yet). The mini app also shows the live W1 referral slots
+("🍬 Mint slots baki: left/total") and the W1 referral state, and
+blocks the mint when no referral slots are left so nobody loses
+gas on a sold-out referral.
 
 Buttons (like the admin's bot): Connect Wallet, Check status,
 Mint Ten Share, Mint Five Share, Claim $3, Help, Disconnect — plus
@@ -637,12 +638,17 @@ def _referral_line(ref):
         level_txt, invites_txt, owed_txt)
 
 
-def _slots_lines(total_shares, total_minted, slots):
-    """Slots lines shared by the quote and the no-slots message."""
-    if slots is None:
-        return "🎟 Slots: — (could not read right now)"
-    return ("🎟 Slots: {:,} left / {:,} total (minted {:,})".format(
-        slots, total_shares, total_minted))
+def _slots_lines(total, minted, left):
+    """Referral slots line for the quote (W1's referral quota).
+
+    Format matches the official bot: "🍬 Mint slots baki: 2187/2197".
+    total/minted/left are W1's referral quota, NOT the global supply.
+    left None means the quota reads failed — show "—", never block.
+    """
+    if left is None:
+        return "🍬 Mint slots baki: —"
+    return "🍬 Mint slots baki: {:,}/{:,} (mint hoyeche {:,})".format(
+        left, total, minted)
 
 
 def handle_mint_quote(chat_id, user_id, qty):
@@ -678,7 +684,7 @@ def handle_mint_quote(chat_id, user_id, qty):
             fut_usdt = pool.submit(baw_users.token_balance,
                                    baw_users.USDT_TOKEN, address)
             fut_gas = pool.submit(baw_users.estimate_mint_gas_wei)
-            fut_slots = pool.submit(baw_users.slots_left)
+            fut_slots = pool.submit(baw_users.referral_slots)
             fut_ref = pool.submit(baw_users.referral_stats)
             cost_wei = fut_cost.result()
             total = fut_total.result()
@@ -686,8 +692,9 @@ def handle_mint_quote(chat_id, user_id, qty):
             ai_before = fut_ai.result()
             usdt_wei = fut_usdt.result()
             gas_wei = fut_gas.result()
-            # Slots + referral must never kill the quote: if their
-            # reads fail, show them as unavailable and do not block.
+            # Referral slots + referral must never kill the quote: if
+            # their reads fail, show them as unavailable and do not
+            # block. slots is (total, minted, left) or None.
             try:
                 slots = fut_slots.result()
             except BawError:
@@ -707,24 +714,29 @@ def handle_mint_quote(chat_id, user_id, qty):
                      "Please try again in a bit.".format(exc),
                      main_keyboard())
         return
-    total_shares = baw_users.TOTAL_SHARES
-    minted = total  # totalMinted == total_shares - slots
+    # Slots here are W1's REFERRAL slots (quotaOf - mintedCount), not
+    # the global mint supply. slots is (total, minted, left) or None
+    # when the quota reads failed (then never block).
+    if slots is not None:
+        ref_total, ref_minted, ref_left = slots
+    else:
+        ref_total = ref_minted = ref_left = None
     ref_line = _referral_line(ref)
-    if slots is not None and slots < qty:
-        # No slots left — block the mint so nobody loses gas/funds on
-        # a sold-out mint. Slots come back only if the project adds
-        # more; until then the mint stays blocked.
+    if ref_left is not None and ref_left < qty:
+        # No referral slots left — block the mint so nobody loses
+        # gas/funds on a sold-out referral. Slots come back only if
+        # the project adds more quota; until then the mint stays
+        # blocked.
         send_message(
             chat_id,
             "❌ Slot nei — mint kora jabe na.\n\n"
             "Referral-e ar kono slot nei — mint kora jabe na.\n"
             "Tumi chaiso: {} shares, baki ache: {} slots.\n\n"
-            "🎟 Total slots: {:,}\n"
+            "🍬 Mint slots baki: {:,}/{:,}\n"
             "✅ Mint hoyeche: {:,}\n"
-            "🎟 Baki slots: {:,}\n"
             "{}\n\n"
             "Slot add hole abar Mint চাপুন।".format(
-                qty, slots, total_shares, minted, slots, ref_line),
+                qty, ref_left, ref_left, ref_total, ref_minted, ref_line),
             main_keyboard())
         return
     cap_wei = qty * baw_users.MAX_COST_PER_SHARE_WEI
@@ -804,7 +816,7 @@ def handle_mint_quote(chat_id, user_id, qty):
             _fmt_bnb(gas_wei), _fmt_bnb(total_needed_wei),
             expected_ai, _fmt_bnb(sell_wei),
             ("-" if net_wei < 0 else "+") + _fmt_bnb(abs(net_wei)),
-            _slots_lines(total_shares, minted, slots), ref_line,
+            _slots_lines(ref_total, ref_minted, ref_left), ref_line,
             address, _fmt_bnb(bnb_wei)),
         keyboard)
 
@@ -1318,9 +1330,11 @@ def mint_app():
 def api_quote():
     """Live mint quote as JSON for the mini app.
 
-    ?qty=5|10. Returns cost, gas, expected AI, sell value, the mint
-    slots (total / minted / left) and the W1 referral state, so the
-    mini app can show them and block the mint when no slots are left.
+    ?qty=5|10. Returns cost, gas, expected AI, sell value, W1's
+    REFERRAL slots (total / minted / left) and the W1 referral state,
+    so the mini app can show them and block the mint when no referral
+    slots are left. The global mint supply is included only as a
+    secondary reference (global_total_minted / global_slots_left).
     """
     try:
         qty = int(request.args.get("qty", "5"))
@@ -1333,14 +1347,20 @@ def api_quote():
         with ThreadPoolExecutor(max_workers=6) as pool:
             fut_cost = pool.submit(baw_users.cost_of, qty)
             fut_total = pool.submit(baw_users.total_minted)
-            fut_shares = pool.submit(baw_users.total_shares)
             fut_gas = pool.submit(baw_users.estimate_mint_gas_wei)
             fut_ref = pool.submit(baw_users.referral_stats)
+            fut_slots = pool.submit(baw_users.referral_slots)
             cost_wei = fut_cost.result()
             total = fut_total.result()
-            total_shares = fut_shares.result()
             gas_wei = fut_gas.result()
             ref = fut_ref.result()
+            # Referral quota reads must never kill the quote: on
+            # failure the slots come back null and the mini app shows
+            # "—" and does NOT block.
+            try:
+                ref_total, ref_minted, ref_left = fut_slots.result()
+            except BawError:
+                ref_total = ref_minted = ref_left = None
         expected_ai = baw_users.estimate_ai_received(cost_wei, qty)
         amounts = baw_users.get_amounts_out(
             expected_ai, [baw_users.AI_TOKEN, baw_users.WBNB_TOKEN])
@@ -1351,7 +1371,6 @@ def api_quote():
             price = None
     except BawError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 503
-    slots = max(0, total_shares - total)
     return jsonify({
         "ok": True,
         "qty": qty,
@@ -1366,9 +1385,13 @@ def api_quote():
         "sell_wei": sell_wei,
         "sell_wei_str": str(sell_wei),
         "sell_bnb": sell_wei / 1e18,
-        "total_minted": total,
-        "total_shares": total_shares,
-        "slots_left": slots,
+        "total_minted": ref_minted,
+        "total_shares": ref_total,
+        "slots_left": ref_left,
+        "referral_slots": {"total": ref_total, "minted": ref_minted,
+                           "left": ref_left},
+        "global_total_minted": total,
+        "global_slots_left": max(0, baw_users.TOTAL_SHARES - total),
         "referral": ref,
         "bnb_price_usd": price,
         "referrer": baw_users.REFERRER_W1,

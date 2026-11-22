@@ -70,7 +70,7 @@
     <div class="row"><span>Net</span><b id="q-net">–</b></div>
   </div>
   <div class="card">
-    <div class="row"><span>🎟 Slots left</span><b id="q-slots">–</b></div>
+    <div class="row"><span>🍬 Mint slots baki</span><b id="q-slots">–</b></div>
     <div class="row"><span>✅ Minted</span><b id="q-minted">–</b></div>
     <div class="row"><span>🎟 Total slots</span><b id="q-total-slots">–</b></div>
     <div class="row"><span>👥 Referral (W1)</span><b id="q-ref">–</b></div>
@@ -136,9 +136,13 @@
     $("q-sell").textContent = "~" + fmtBnb(q.sell_wei_str);
     var net = BigInt(q.sell_wei_str) - BigInt(q.cost_wei_str);
     $("q-net").textContent = (net < 0n ? "-" : "+") + fmtBnb((net < 0n ? -net : net).toString());
-    $("q-slots").textContent = Number(q.slots_left).toLocaleString("en-US");
-    $("q-minted").textContent = Number(q.total_minted).toLocaleString("en-US");
-    $("q-total-slots").textContent = Number(q.total_shares).toLocaleString("en-US");
+    // Referral slots, official-bot format: "2189/2199". Null means the
+    // quota read failed — show "–", never block on unknown state.
+    $("q-slots").textContent = (q.slots_left == null || q.total_shares == null)
+      ? "–"
+      : Number(q.slots_left).toLocaleString("en-US") + "/" + Number(q.total_shares).toLocaleString("en-US");
+    $("q-minted").textContent = (q.total_minted == null) ? "–" : Number(q.total_minted).toLocaleString("en-US");
+    $("q-total-slots").textContent = (q.total_shares == null) ? "–" : Number(q.total_shares).toLocaleString("en-US");
     var r = q.referral || {};
     var lvl = (r.level === 0) ? "Level 0 (5%)" : (r.level === 1) ? "Level 1 (10%)"
       : (r.level === 2) ? "Level 2 (15%)" : "Level –";
@@ -146,7 +150,7 @@
       (r.invites == null ? "invites –" : r.invites + " invites") + " • " +
       (r.owed_wei == null ? "owed –" : Number(r.owed_wei).toLocaleString("en-US") + " AI owed");
     var no = $("noslots");
-    if (q.slots_left < q.qty) {
+    if (typeof q.slots_left === "number" && q.slots_left < q.qty) {
       no.innerHTML = "❌ Slot nei — mint kora jabe na.<br>" +
         "Referral-e ar kono slot nei — mint kora jabe na.<br>" +
         "Tumi chaiso: " + q.qty + " shares, baki ache: " + q.slots_left + " slots.<br>" +
@@ -208,7 +212,7 @@
         $("btn-mint").disabled = true;
       } else {
         $("wallet-note").textContent = "Agent ID থাকতে হবে — না থাকলে mint fail হবে।";
-        if (quote && quote.slots_left >= quote.qty) $("btn-mint").disabled = false;
+        if (quote && (quote.slots_left == null || quote.slots_left >= quote.qty)) $("btn-mint").disabled = false;
       }
       $("btn-connect").textContent = "🔗 Wallet Connected ✅";
       setStatus("");
@@ -246,7 +250,7 @@
     // Fresh total + cost right before sending — the pool moves fast and
     // the contract wants expectedStart == totalMinted + 1.
     loadQuote().then(function (q) {
-      if (q.slots_left < q.qty) {
+      if (q.slots_left != null && q.slots_left < q.qty) {
         throw new Error("Slot nei — mint kora jabe na. (slots left: " + q.slots_left + ")");
       }
       var cost = BigInt(q.cost_wei_str);
@@ -278,7 +282,7 @@
     }).catch(function (err) {
       showError("Mint failed: " + (err && err.message ? err.message : err) + " — kichu pathano hoy nai.");
       setStatus("");
-      if (quote && quote.slots_left >= quote.qty && account) $("btn-mint").disabled = false;
+      if (quote && (quote.slots_left == null || quote.slots_left >= quote.qty) && account) $("btn-mint").disabled = false;
     });
   }
 

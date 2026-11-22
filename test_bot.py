@@ -371,7 +371,7 @@ baw_users.dev_mode_enabled = lambda uid: True
 bot.bnb_price_usd = lambda: 600.0
 baw_users.paid_once = lambda addr: False
 baw_users.estimate_mint_gas_wei = lambda: 20 * 10 ** 12  # 0.00002 BNB gas
-baw_users.slots_left = lambda: 4211133  # 4,440,000 - 228,867
+baw_users.referral_slots = lambda: (2199, 10, 2189)  # W1 referral quota
 baw_users.referral_stats = lambda: {"level": 1, "invites": 12,
                                     "owed_wei": 0}
 
@@ -402,8 +402,8 @@ check("mint: quote shows estimated gas + total needed",
 check("mint: quote shows expected AI + sell value",
       any("11,380,000,000,000" in t and "0.07690" in t for t in texts),
       str(texts))
-check("mint: quote shows slots left + W1 referral",
-      any("Slots: 4,211,133 left" in t and "Referral (W1)" in t
+check("mint: quote shows referral slots baki + W1 referral",
+      any("🍬 Mint slots baki: 2,189/2,199" in t and "Referral (W1)" in t
           for t in texts), str(texts))
 check("mint: quote says sell is NOT a profit",
       any("profit হবে না" in t for t in texts), str(texts))
@@ -786,7 +786,59 @@ baw_users.total_minted = lambda: 5000000
 check("slots: slots_left never goes negative",
       baw_users.slots_left() == 0, str(baw_users.slots_left()))
 
-# N2: referral_stats reads level / invites / owed for W1.
+# N1b: W1 REFERRAL slots — quotaOf - mintedCount, NOT the global supply.
+# Live 2026-11-22: referrerIdOf(W1) -> quota 2199, minted 10, left 2189.
+from eth_abi import encode as _enc2
+
+_W1_REF_ID = 10632779413466256802594837300411891640108436114168020917336215689641077904128
+
+
+def _fake_quota_call(to, data):
+    sel = data[2:10]
+    if sel == baw_users._selector("referrerIdOf(address)"):
+        return "0x" + _enc2(["uint256"], [_W1_REF_ID]).hex()
+    if sel == baw_users._selector("quotaOf(uint256)"):
+        return "0x" + _enc2(["uint256"], [2199]).hex()
+    if sel == baw_users._selector("mintedCount(uint256)"):
+        return "0x" + _enc2(["uint256"], [10]).hex()
+    return "0x" + _enc2(["uint256"], [0]).hex()
+
+
+bot, baw_users = load_bot(BASE_ENV)
+baw_users.eth_call = _fake_quota_call
+check("referral slots: referrerIdOf(W1) is the keccak id",
+      baw_users.referral_id_of() == _W1_REF_ID,
+      str(baw_users.referral_id_of()))
+check("referral slots: quota 2199, minted 10, left 2189",
+      baw_users.referral_slots() == (2199, 10, 2189),
+      str(baw_users.referral_slots()))
+check("referral slots: referral_slots_left() is 2189",
+      baw_users.referral_slots_left() == 2189,
+      str(baw_users.referral_slots_left()))
+
+
+def _fake_quota_call_over(to, data):
+    sel = data[2:10]
+    if sel == baw_users._selector("referrerIdOf(address)"):
+        return "0x" + _enc2(["uint256"], [_W1_REF_ID]).hex()
+    if sel == baw_users._selector("quotaOf(uint256)"):
+        return "0x" + _enc2(["uint256"], [5]).hex()
+    if sel == baw_users._selector("mintedCount(uint256)"):
+        return "0x" + _enc2(["uint256"], [10]).hex()
+    return "0x" + _enc2(["uint256"], [0]).hex()
+
+
+baw_users.eth_call = _fake_quota_call_over
+check("referral slots: left never goes negative (quota 5, minted 10)",
+      baw_users.referral_slots() == (5, 10, 0),
+      str(baw_users.referral_slots()))
+check("referral slots: display string is 'Mint slots baki: 2189/2199'",
+      bot._slots_lines(2199, 10, 2189)
+      == "🍬 Mint slots baki: 2,189/2,199 (mint hoyeche 10)",
+      bot._slots_lines(2199, 10, 2189))
+check("referral slots: failed reads show '—', never block",
+      bot._slots_lines(None, None, None) == "🍬 Mint slots baki: —",
+      bot._slots_lines(None, None, None))
 from eth_abi import encode as _enc2
 
 
@@ -826,7 +878,7 @@ client = bot.app.test_client()
 baw_users.cost_of = lambda qty: COST_5 if qty == 5 else COST_10
 baw_users.total_minted = lambda: 4439997
 baw_users.total_shares = lambda: 4440000
-baw_users.slots_left = lambda: 3  # fewer than the 5 requested
+baw_users.referral_slots = lambda: (150, 147, 3)  # W1 referral: 3 left
 baw_users.referral_stats = lambda: {"level": 0, "invites": 0,
                                     "owed_wei": 0}
 baw_users.eth_get_balance = lambda addr: 10 ** 18
@@ -844,6 +896,8 @@ texts = texts_of(calls)
 check("slots: no slots -> Bangla block message, no fund loss",
       any("Slot nei" in t and "Referral-e ar kono slot nei" in t
           for t in texts), str(texts))
+check("slots: no slots -> shows referral slots baki 3/150",
+      any("🍬 Mint slots baki: 3/150" in t for t in texts), str(texts))
 check("slots: no slots -> no Confirm button, no pending mint",
       not any(b.get("callback_data") == "confirm_mint_5"
               for b in buttons_of(calls))
@@ -903,7 +957,7 @@ bot, baw_users = load_bot(BASE_ENV)
 client = bot.app.test_client()
 baw_users.cost_of = lambda qty: COST_5 if qty == 5 else COST_10
 baw_users.total_minted = lambda: 228867
-baw_users.total_shares = lambda: 4440000
+baw_users.referral_slots = lambda: (2199, 10, 2189)  # W1 referral quota
 baw_users.estimate_mint_gas_wei = lambda: 20 * 10 ** 12
 baw_users.referral_stats = lambda: {"level": 1, "invites": 12,
                                     "owed_wei": 0}
@@ -912,9 +966,13 @@ baw_users.get_amounts_out = lambda amt, path: [amt, 38450000000000000]
 bot.bnb_price_usd = lambda: 600.0
 resp = client.get("/api/quote?qty=5")
 q = resp.get_json()
-check("api: /api/quote?qty=5 returns slots + cost + referral",
+check("api: /api/quote?qty=5 returns referral slots + cost + referral",
       resp.status_code == 200 and q.get("ok") is True
-      and q.get("qty") == 5 and q.get("slots_left") == 4211133
+      and q.get("qty") == 5 and q.get("slots_left") == 2189
+      and q.get("total_shares") == 2199
+      and q.get("total_minted") == 10
+      and q.get("referral_slots") == {"total": 2199, "minted": 10,
+                                      "left": 2189}
       and q.get("cost_wei_str") == str(COST_5)
       and q.get("referral", {}).get("level") == 1
       and q.get("referrer") == "0xE012133823df5452de9c10a73fE935d26B995A97",

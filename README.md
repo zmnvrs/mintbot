@@ -60,13 +60,18 @@ When `MINI_APP_URL` is not set, the Mint buttons fall back to the
 old `baw` quote/confirm flow (kept so the bot still works before
 the mini app has a public URL).
 
-**Slots:** the mint has 4,440,000 total shares (`TOTAL_SHARES()`).
-The quote (in the bot and in the mini app) shows slots left
-(`TOTAL_SHARES - totalMinted`) and the W1 referral state (level,
-valid invites, owed bonus). If the slots left are fewer than the
-requested shares, the mint is blocked with a plain message
+**Slots:** the slots shown are the OWNER'S (W1) REFERRAL slots, not
+the global mint supply. The referral quota is `quotaOf(referrerIdOf(W1))`
+(total slots for W1's referral), `mintedCount(...)` is how many shares
+were already minted under it, and slots left = quota − minted (live
+2026-11-22: 2199 total, 10 minted, 2189 left). The quote (in the bot
+and in the mini app) shows them as "🍬 Mint slots baki: 2189/2199"
+alongside the W1 referral state (level, valid invites, owed bonus).
+If the referral slots left are fewer than the requested shares, the
+mint is blocked with a plain message
 ("Referral-e ar kono slot nei — mint kora jabe na") so nobody
-loses gas on a sold-out mint.
+loses gas on a sold-out referral. The global mint supply
+(`TOTAL_SHARES()` = 4,440,000) is only a secondary reference.
 
 **Hosting the mini app:** Telegram Web Apps need a public HTTPS
 URL. Deploy this repo to Render (the `render.yaml` web service
