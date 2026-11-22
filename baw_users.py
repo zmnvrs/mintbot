@@ -599,34 +599,32 @@ def mint_calldata(qty, max_cost_wei, expected_start, deadline):
         [qty, REFERRER_W1, max_cost_wei, expected_start, 0, deadline])
 
 
-# How far ahead of the live totalMinted to aim expected_start.
-# The contract wants expected_start == totalMinted + 1 at the moment
-# the transaction is simulated, but a baw preview takes ~5 seconds
-# and the pool mints ~2-3 shares/second, so a start read as total+1
-# is already ~10 shares stale by simulation time (baw 351805).
-# Aiming ~12 shares ahead lands the start where totalMinted will be
-# when the preview simulates.
-MINT_START_BUFFER = 12
-# Preview attempts per mint (each with a fresh total read).
+# Preview attempts per mint (each with a fresh total + cost read).
 MINT_PREVIEW_ATTEMPTS = 4
+# maxCost headroom over the live costOf, in basis points (2%): the
+# price rises fast while many people mint, so an exact maxCost is
+# already too low by the time the slow (~5s) baw preview simulates
+# (Grok's diagnosis 2026-11-22: BadStart / stale expectedStart).
+MINT_MAX_COST_BPS = 200
 
 
 def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
     """Preview + execute one mint. Returns {"tx_hash", "status"}.
 
-    The pool moves fast and the contract checks expected_start, so a
-    preview built on a stale start reverts (baw error 351805). Each
-    attempt re-reads totalMinted fresh and aims expected_start ahead
-    by MINT_START_BUFFER, to land where totalMinted will be when the
-    slow (~5s) baw preview simulates. Retries up to
-    MINT_PREVIEW_ATTEMPTS times, with an explicit gas limit (baw can
-    under-estimate gas). The retry mints the same number of shares,
-    just starting at the live index. Raises BawError on any failure.
+    The pool moves fast and the contract checks expected_start (BadStart
+    revert) and maxCost, so a preview built on stale numbers reverts
+    (baw error 351805). Each attempt re-reads totalMinted AND costOf
+    fresh, uses expected_start == fresh total + 1 exactly (no ahead
+    buffer — the contract wants the live index), and sets maxCost 2%
+    above the live cost so a fast-rising price does not make the cap
+    too low by simulation time. Retries up to MINT_PREVIEW_ATTEMPTS
+    times, each with fresh reads and an explicit gas limit (baw can
+    under-estimate gas). Raises BawError on any failure.
     """
-    def _attempt(start, gas_limit=None):
+    def _attempt(start, cost_wei, gas_limit=None):
         deadline = int(time.time()) + 600
-        data = mint_calldata(qty, max_cost_wei, start, deadline)
-        prev = preview(home, from_addr, MINT_CONTRACT, max_cost_wei, data,
+        data = mint_calldata(qty, cost_wei, start, deadline)
+        prev = preview(home, from_addr, MINT_CONTRACT, cost_wei, data,
                        gas_limit=gas_limit)
         if not preview_is_clean(prev):
             raise BawError("mint preview not clean (status: {}). "
@@ -636,9 +634,13 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
     last_err = None
     for attempt in range(MINT_PREVIEW_ATTEMPTS):
         try:
+            # Fresh reads right before this attempt — never reuse the
+            # quote's cost or a previous attempt's total.
             fresh_total = total_minted()
-            start = fresh_total + 1 + MINT_START_BUFFER
-            prev = _attempt(start, gas_limit=400000)
+            fresh_cost = cost_of(qty)
+            max_cost = fresh_cost * (10000 + MINT_MAX_COST_BPS) // 10000
+            start = fresh_total + 1
+            prev = _attempt(start, max_cost, gas_limit=400000)
             break
         except BawError as exc:
             last_err = exc

@@ -723,21 +723,23 @@ finally:
 check("rpc: primary 403 -> fallback still returns costOf(10)",
       _cost == 12345, str(_cost))
 
-# --- M: do_mint retries with a fresh expected_start --------------------
-# The pool moves fast and the contract checks expected_start, so a
-# preview built on a stale start reverts (baw 351805). do_mint must
-# re-read totalMinted and retry with a fresh start aimed ahead by
-# MINT_START_BUFFER, to land where totalMinted will be when the slow
-# baw preview simulates.
+# --- M: do_mint retries with fresh total + cost (Grok fix) -----------
+# The pool moves fast and the contract checks expected_start (BadStart)
+# and maxCost, so a preview built on stale numbers reverts (baw
+# 351805). do_mint must re-read totalMinted AND costOf fresh before
+# each attempt, use expected_start == fresh total + 1 exactly (no
+# ahead buffer), and set maxCost 2% above the live cost. Never reuse
+# a previous attempt's numbers.
 _real_preview = baw_users.preview
 _real_total = baw_users.total_minted
+_real_cost = baw_users.cost_of
 _real_execute = baw_users.execute
 _preview_calls = []
 
 
 def _preview_fail_once(home, from_addr, to, value_wei, input_data,
                        gas_limit=None):
-    _preview_calls.append(input_data)
+    _preview_calls.append((value_wei, input_data))
     if len(_preview_calls) == 1:
         raise baw_users.BawError(
             "baw error 351805: Transaction simulation failed")
@@ -746,6 +748,7 @@ def _preview_fail_once(home, from_addr, to, value_wei, input_data,
 
 baw_users.preview = _preview_fail_once
 baw_users.total_minted = lambda: 300000  # fresh total at retry time
+baw_users.cost_of = lambda qty: 39 * 10 ** 15  # fresh cost at retry time
 baw_users.execute = lambda home, req_id: {"tx_hash": "0xfreshmint",
                                           "status": "OK"}
 try:
@@ -754,21 +757,26 @@ try:
 finally:
     baw_users.preview = _real_preview
     baw_users.total_minted = _real_total
+    baw_users.cost_of = _real_cost
     baw_users.execute = _real_execute
 check("mint: stale start -> do_mint retries once and succeeds",
       _res.get("tx_hash") == "0xfreshmint" and len(_preview_calls) == 2,
       str(_preview_calls))
-# The retry calldata must encode the fresh start aimed ahead by the
-# buffer: 300000 + 1 + MINT_START_BUFFER, not the stale 200000.
+# The retry calldata must encode the fresh start EXACTLY (300000 + 1,
+# no ahead buffer) and maxCost 2% above the fresh cost.
 from eth_abi import decode as _dec
-_retry_data = _preview_calls[1]
+_retry_value, _retry_data = _preview_calls[1]
 _retry_args = _dec(["uint256", "address", "uint256", "uint256",
                    "uint256", "uint256"],
                   bytes.fromhex(_retry_data[10:]))
-check("mint: retry calldata uses fresh expected_start + buffer",
-      _retry_args[3] == 300000 + 1 + baw_users.MINT_START_BUFFER
+check("mint: retry calldata uses fresh expected_start (no buffer)",
+      _retry_args[3] == 300000 + 1
       and _retry_args[0] == 5,
       str(_retry_args))
+check("mint: retry maxCost is fresh cost + 2%",
+      _retry_args[2] == (39 * 10 ** 15) * 102 // 100
+      and _retry_value == (39 * 10 ** 15) * 102 // 100,
+      str(_retry_args[2]))
 
 # --- N: slots + mini app (direct WalletConnect mint) --------------------
 # N1: slots_left math (TOTAL_SHARES - totalMinted), clamped at 0.
