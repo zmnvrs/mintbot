@@ -28,6 +28,7 @@ What it checks:
 """
 
 import importlib
+import json
 import os
 import sys
 import tempfile
@@ -673,6 +674,40 @@ check("polling: /start update answered with welcome",
       str(texts))
 check("polling: stale webhook cleared first",
       calls and calls[0][0] == "deleteWebhook", str(calls[:1]))
+
+# --- L: BSC RPC fallback (primary 403 -> fallback answers) ---------------
+# The primary dataseed returns a 403 HTML page at times; a single
+# endpoint made every chain read fail with "Expecting value: line 1
+# column 1 (char 0)". The _rpc helper must rotate to a working one.
+import requests as _req
+
+_real_post = _req.post
+
+
+class _FakeResp(object):
+    def __init__(self, text):
+        self.text = text
+
+    def json(self):
+        return json.loads(self.text)
+
+
+def _flaky_post(url, **kwargs):
+    if "bsc-dataseed.bnbchain.org" in url:
+        # Primary returns a 403 HTML page (not JSON).
+        return _FakeResp("<html><head><title>403 Forbidden</title></head></html>")
+    # Fallback returns a valid eth_call result: uint256 12345.
+    return _FakeResp(
+        '{"jsonrpc":"2.0","id":1,"result":"0x0000000000000000000000000000000000000000000000000000000000003039"}')
+
+
+baw_users.requests.post = _flaky_post
+try:
+    _cost = baw_users.cost_of(10)
+finally:
+    baw_users.requests.post = _real_post
+check("rpc: primary 403 -> fallback still returns costOf(10)",
+      _cost == 12345, str(_cost))
 
 print()
 if FAILURES:

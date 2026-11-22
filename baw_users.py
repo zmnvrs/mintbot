@@ -70,6 +70,18 @@ MINT_GAS_UNITS = 250000
 
 BSC_RPC = os.environ.get(
     "BSC_RPC", "https://bsc-dataseed.bnbchain.org").strip()
+# Fallback BSC RPC endpoints, tried in order when the primary fails.
+# The primary dataseed returns 403 (HTML, not JSON) at times — a single
+# endpoint means every chain read (balance, mint cost, gas) fails at
+# once, so the bot must rotate to a working one.
+BSC_RPC_FALLBACKS = [
+    "https://bsc-dataseed1.bnbchain.org",
+    "https://bsc-dataseed2.bnbchain.org",
+    "https://bsc-dataseed4.bnbchain.org",
+    "https://bsc-dataseed1.defibit.io",
+    "https://bsc.publicnode.com",
+    "https://1rpc.io/bnb",
+]
 USDT_DECIMALS = 18
 
 
@@ -328,48 +340,51 @@ def _calldata(sig, types, values):
     return "0x" + _selector(sig) + encode(types, values).hex()
 
 
+def _rpc(method, params):
+    """One JSON-RPC call to BSC, rotating endpoints on failure.
+
+    Tries the primary BSC_RPC first, then each fallback. An endpoint
+    that returns non-JSON (e.g. a 403 HTML page), an RPC error, or a
+    timeout is skipped and the next one is tried. Returns the result
+    field of the first good response. Raises BawError only when every
+    endpoint failed.
+    """
+    endpoints = [BSC_RPC] + [u for u in BSC_RPC_FALLBACKS if u != BSC_RPC]
+    last_err = "no endpoint tried"
+    for url in endpoints:
+        try:
+            resp = requests.post(
+                url,
+                json={"jsonrpc": "2.0", "method": method,
+                      "params": params, "id": 1},
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0"})
+            res = resp.json()
+        except Exception as exc:
+            last_err = "{}: {}".format(url, exc)
+            continue
+        if "error" in res:
+            last_err = "{}: {}".format(url, res["error"])
+            continue
+        if "result" not in res:
+            last_err = "{}: no result in response".format(url)
+            continue
+        return res["result"]
+    raise BawError("BSC RPC unreachable: {}".format(last_err))
+
+
 def eth_call(to, data):
     """Raw eth_call on BSC. Returns the 0x result, raises BawError."""
-    try:
-        resp = requests.post(
-            BSC_RPC,
-            json={"jsonrpc": "2.0", "method": "eth_call",
-                  "params": [{"to": to, "data": data}, "latest"], "id": 1},
-            timeout=20)
-        res = resp.json()
-    except Exception as exc:
-        raise BawError("BSC RPC unreachable: {}".format(exc))
-    if "error" in res:
-        raise BawError("BSC RPC error: {}".format(res["error"]))
-    return res.get("result", "0x")
+    return _rpc("eth_call", [{"to": to, "data": data}, "latest"]) or "0x"
 
 
 def eth_get_balance(address):
-    try:
-        resp = requests.post(
-            BSC_RPC,
-            json={"jsonrpc": "2.0", "method": "eth_getBalance",
-                  "params": [address, "latest"], "id": 1},
-            timeout=20)
-        return int(resp.json()["result"], 16)
-    except Exception as exc:
-        raise BawError("BSC RPC unreachable: {}".format(exc))
+    return int(_rpc("eth_getBalance", [address, "latest"]), 16)
 
 
 def gas_price_wei():
     """Live BSC gas price in wei (eth_gasPrice)."""
-    try:
-        resp = requests.post(
-            BSC_RPC,
-            json={"jsonrpc": "2.0", "method": "eth_gasPrice",
-                  "params": [], "id": 1},
-            timeout=20)
-        res = resp.json()
-    except Exception as exc:
-        raise BawError("BSC RPC unreachable: {}".format(exc))
-    if "error" in res:
-        raise BawError("BSC RPC error: {}".format(res["error"]))
-    return int(res.get("result", "0x0"), 16)
+    return int(_rpc("eth_gasPrice", []), 16)
 
 
 def estimate_mint_gas_wei():
