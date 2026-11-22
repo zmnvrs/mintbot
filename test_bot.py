@@ -359,6 +359,13 @@ baw_users.dev_mode_enabled = lambda uid: True
 bot.bnb_price_usd = lambda: 600.0
 baw_users.paid_once = lambda addr: False
 
+# Referral: every mint from this bot must use W1 (the owner) as referrer.
+_W1_HEX = "e012133823df5452de9c10a73fe935d26b995a97"
+_calldata = baw_users.mint_calldata(10, COST_10, 1000, 2000)
+check("referral: mint calldata uses W1 as referrer",
+      baw_users.REFERRER_W1.lower() == "0x" + _W1_HEX
+      and _W1_HEX in _calldata.lower(), str(_calldata)[:120])
+
 # G1: quote when not paired -> connect first
 calls.clear()
 client.post("/webhook", json=callback_update(111, "mint_10"))
@@ -603,6 +610,7 @@ calls = make_calls(bot)
 client = bot.app.test_client()
 bot.bnb_balance = lambda addr: 0.1
 bot.bnb_price_usd = lambda: 500.0
+baw_users.token_balance = lambda token, addr: 25 * 10 ** 18  # 25 USDT
 client.post("/webhook", json=callback_update(111, "check_balance"))
 client.post("/webhook", json={
     "update_id": 3,
@@ -612,6 +620,9 @@ client.post("/webhook", json={
 texts = texts_of(calls)
 check("balance: eligible at $50 vs $41 min",
       any("Eligible" in t and "$50.00" in t for t in texts), str(texts))
+check("balance: shows BNB + USDT + BNB value in USDT",
+      any("BNB: 0.10000" in t and "USDT: 25.00" in t
+          and "BNB value: $50.00" in t for t in texts), str(texts))
 calls.clear()
 client.post("/webhook", json=callback_update(111, "tasks"))
 check("tasks: no channels -> optional, can mint now",

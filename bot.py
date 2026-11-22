@@ -281,14 +281,31 @@ _PRICE_TTL_S = 120
 
 
 def bnb_price_usd():
-    """BNB price in USD from the Binance public ticker (no API key)."""
+    """BNB price in USD. Tries the Binance ticker first, then CoinGecko
+    (api.binance.com is geo-blocked from this machine and returns an
+    error instead of a price)."""
     now = time.time()
     if (_price_cache["value"] is not None
             and now - _price_cache["at"] < _PRICE_TTL_S):
         return _price_cache["value"]
-    resp = requests.get(BINANCE_TICKER, params={"symbol": "BNBUSDT"},
-                        timeout=15)
-    value = float(resp.json()["price"])
+    value = None
+    try:
+        resp = requests.get(BINANCE_TICKER, params={"symbol": "BNBUSDT"},
+                            timeout=15)
+        value = float(resp.json()["price"])
+    except Exception:
+        value = None
+    if value is None:
+        try:
+            resp = requests.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": "binancecoin", "vs_currencies": "usd"},
+                timeout=15)
+            value = float(resp.json()["binancecoin"]["usd"])
+        except Exception:
+            value = None
+    if value is None:
+        raise RuntimeError("could not fetch the BNB price")
     _price_cache["value"] = value
     _price_cache["at"] = now
     return value
@@ -839,8 +856,8 @@ def handle_callback(query):
         send_message(
             chat_id,
             "Send your BSC wallet address (starts with 0x).\n"
-            "I will check your BNB balance — no wallet connection needed, "
-            "just the address.")
+            "I will show your BNB, your USDT, and your BNB value in "
+            "USDT — no wallet connection needed, just the address.")
         return
 
     if data == "tasks":
@@ -907,7 +924,12 @@ def handle_message(msg):
             return
         user_state.pop(chat_id, None)
         try:
-            balance = bnb_balance(text)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                fut_bnb = pool.submit(bnb_balance, text)
+                fut_usdt = pool.submit(
+                    baw_users.token_balance, baw_users.USDT_TOKEN, text)
+                balance = fut_bnb.result()
+                usdt = fut_usdt.result() / 1e18
             price = bnb_price_usd()
             usd_value = balance * price
         except Exception:
@@ -924,10 +946,11 @@ def handle_message(msg):
         send_message(
             chat_id,
             "{}\n\n"
-            "BNB: {:.5f}\n"
-            "Value: ${:.2f} (BNB price ${:.2f})\n"
+            "💰 BNB: {:.5f}\n"
+            "💵 USDT: {:.2f}\n"
+            "💲 BNB value: ${:.2f} (BNB price ${:.2f})\n"
             "Minimum needed: ${:.2f}".format(
-                verdict, balance, usd_value, price, MIN_BNB_USD),
+                verdict, balance, usdt, usd_value, price, MIN_BNB_USD),
             main_keyboard())
         return
 
