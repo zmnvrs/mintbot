@@ -764,8 +764,8 @@ check("mint: stale start -> do_mint retries once and succeeds",
       _res.get("tx_hash") == "0xfreshmint" and len(_preview_calls) == 2,
       str(_preview_calls))
 # The retry calldata must encode the fresh start EXACTLY (300000 + 1,
-# no ahead buffer), maxCost = the fresh cost exactly (no buffer, per
-# the mint prompt), and the preview value as the same exact cost.
+# no ahead buffer), maxCost = fresh cost + 1% (buffer, for instant
+# first-try preview), and the preview value as the same buffered cost.
 from eth_abi import decode as _dec
 _retry_value, _retry_data = _preview_calls[1]
 _retry_args = _dec(["uint256", "address", "uint256", "uint256",
@@ -775,9 +775,9 @@ check("mint: retry calldata uses fresh expected_start (no buffer)",
       _retry_args[3] == 300000 + 1
       and _retry_args[0] == 5,
       str(_retry_args))
-check("mint: retry maxCost is fresh cost exactly (calldata), value is exact cost",
-      _retry_args[2] == (39 * 10 ** 15)
-      and _retry_value == (39 * 10 ** 15),
+check("mint: retry maxCost is fresh cost + 1% (calldata), value is same buffered cost",
+      _retry_args[2] == (39 * 10 ** 15) * 101 // 100
+      and _retry_value == (39 * 10 ** 15) * 101 // 100,
       str((_retry_args[2], _retry_value)))
 
 # --- N: slots + mini app (direct WalletConnect mint) --------------------

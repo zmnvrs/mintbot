@@ -605,12 +605,17 @@ def mint_calldata(qty, max_cost_wei, expected_start, deadline):
 # time). The old 4-attempt loop gave up after ~30 seconds; a
 # fast-moving pool needs far longer. (2026-11-22: prompt input.)
 MINT_RETRY_SECONDS = 1800
-# maxCost headroom over the live costOf, in basis points (0 — the
-# mint prompt says maxCost = costOf(10) read right before sending,
-# value = maxCost exactly, and to retry on failure with fresh reads
-# instead of buffering. A buffer only helps a slow preview; the
-# 30-minute retry loop is the prompt's answer to a rising price.)
-MINT_MAX_COST_BPS = 0
+# maxCost headroom over the live costOf, in basis points (1%): the
+# pool moves fast — the price rises during the slow (~5s) baw
+# preview, so an exact maxCost is already too low by simulation
+# time and the preview fails (351805/953401), forcing retries.
+# A 1% buffer lets the preview pass on the FIRST try (instant,
+# like the other bot) by absorbing the price rise inside the
+# preview window. Both the calldata maxCost AND the BNB sent
+# (value) carry the buffer, so a rise never makes msg.value
+# short either. Cost: at most ~1% overpay (~0.0004 BNB on a
+# 5-share mint) if the price does not rise. (2026-11-22: instant fix.)
+MINT_MAX_COST_BPS = 100
 
 
 def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
@@ -621,15 +626,13 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
     (baw error 351805). Each attempt re-reads totalMinted AND costOf
     fresh, uses expected_start == fresh total + 1 exactly (no ahead
     buffer — the contract wants the live index), and sets the calldata
-    maxCost to the live cost exactly (per the mint prompt: maxCost =
-    costOf, value = maxCost, retry on failure). The BNB actually sent
-    (preview --value) is the same exact live cost. On BadStart /
-    execution-reverted / simulation error — whether the PREVIEW or the
-    EXECUTE fails — re-read fresh and retry the whole preview+execute
-    cycle for up to 30 minutes (MINT_RETRY_SECONDS). The execute is
-    inside the loop because a preview can pass and the execute still
-    fail when the price moves in between (baw 953401). Raises BawError
-    on any failure.
+    maxCost AND the BNB sent (value) to the live cost + 1% — the
+    buffer absorbs the price rise inside the slow (~5s) preview so
+    it passes on the FIRST try (instant, like the other bot). On
+    BadStart / execution-reverted / simulation error — whether the
+    PREVIEW or the EXECUTE fails — re-read fresh and retry the whole
+    preview+execute cycle for up to 30 minutes (MINT_RETRY_SECONDS).
+    Raises BawError on any failure.
     """
     def _attempt(start, max_cost_wei, value_wei, gas_limit=None):
         deadline = int(time.time()) + 600
@@ -655,9 +658,10 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
             # (~200-250k). An explicit 400k cap inflated the preview's
             # balance check (value + gas_limit * gas_price) and pushed
             # tight balances over the edge (351805).
-            # Value sent = exact live cost; maxCost param is the same
-            # exact cost (MINT_MAX_COST_BPS = 0, per the mint prompt).
-            prev = _attempt(start, max_cost, fresh_cost)
+            # Value sent = maxCost (both carry the 1% buffer) so a
+            # price rise inside the preview never makes msg.value
+            # short — the preview passes first try (instant).
+            prev = _attempt(start, max_cost, max_cost)
             result = execute(home, prev["request_id"])
             if not result.get("tx_hash"):
                 raise BawError(
