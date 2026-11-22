@@ -83,13 +83,6 @@
     <div class="row"><span>Sell value</span><b id="q-sell">–</b></div>
     <div class="row"><span>Net</span><b id="q-net">–</b></div>
   </div>
-  <div class="card">
-    <div class="row"><span>🍬 Mint slots baki</span><b id="q-slots">–</b></div>
-    <div class="row"><span>✅ Minted</span><b id="q-minted">–</b></div>
-    <div class="row"><span>🎟 Total slots</span><b id="q-total-slots">–</b></div>
-    <div class="row"><span>👥 Referral (W1)</span><b id="q-ref">–</b></div>
-    <div class="muted" style="margin-top:6px">Sell করলে profit হবে না — BNB ফেরত পাবেন, ~$0.60 + gas কম।</div>
-  </div>
   <div id="noslots" class="err hidden"></div>
   <div id="wallet" class="card hidden">
     <div class="muted">Connected wallet</div>
@@ -150,19 +143,8 @@
     $("q-sell").textContent = "~" + fmtBnb(q.sell_wei_str);
     var net = BigInt(q.sell_wei_str) - BigInt(q.cost_wei_str);
     $("q-net").textContent = (net < 0n ? "-" : "+") + fmtBnb((net < 0n ? -net : net).toString());
-    // Referral slots, official-bot format: "2189/2199". Null means the
-    // quota read failed — show "–", never block on unknown state.
-    $("q-slots").textContent = (q.slots_left == null || q.total_shares == null)
-      ? "–"
-      : Number(q.slots_left).toLocaleString("en-US") + "/" + Number(q.total_shares).toLocaleString("en-US");
-    $("q-minted").textContent = (q.total_minted == null) ? "–" : Number(q.total_minted).toLocaleString("en-US");
-    $("q-total-slots").textContent = (q.total_shares == null) ? "–" : Number(q.total_shares).toLocaleString("en-US");
-    var r = q.referral || {};
-    var lvl = (r.level === 0) ? "Level 0 (5%)" : (r.level === 1) ? "Level 1 (10%)"
-      : (r.level === 2) ? "Level 2 (15%)" : "Level –";
-    $("q-ref").textContent = lvl + " • " +
-      (r.invites == null ? "invites –" : r.invites + " invites") + " • " +
-      (r.owed_wei == null ? "owed –" : Number(r.owed_wei).toLocaleString("en-US") + " AI owed");
+    // The slots/referral display was removed (owner's call) — the
+    // slot check below still blocks the mint when no slots are left.
     var no = $("noslots");
     if (typeof q.slots_left === "number" && q.slots_left < q.qty) {
       no.innerHTML = "❌ Slot nei — mint kora jabe na.<br>" +
