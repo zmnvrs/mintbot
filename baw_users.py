@@ -624,8 +624,12 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
     maxCost to the live cost exactly (per the mint prompt: maxCost =
     costOf, value = maxCost, retry on failure). The BNB actually sent
     (preview --value) is the same exact live cost. On BadStart /
-    execution-reverted, re-read fresh and retry for up to 30 minutes
-    (MINT_RETRY_SECONDS). Raises BawError on any failure.
+    execution-reverted / simulation error — whether the PREVIEW or the
+    EXECUTE fails — re-read fresh and retry the whole preview+execute
+    cycle for up to 30 minutes (MINT_RETRY_SECONDS). The execute is
+    inside the loop because a preview can pass and the execute still
+    fail when the price moves in between (baw 953401). Raises BawError
+    on any failure.
     """
     def _attempt(start, max_cost_wei, value_wei, gas_limit=None):
         deadline = int(time.time()) + 600
@@ -638,9 +642,8 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
         return prev
 
     last_err = None
-    prev = None
     retry_deadline = time.time() + MINT_RETRY_SECONDS
-    while prev is None:
+    while True:
         try:
             # Fresh reads right before this attempt — never reuse the
             # quote's cost or a previous attempt's total.
@@ -655,20 +658,21 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
             # Value sent = exact live cost; maxCost param is the same
             # exact cost (MINT_MAX_COST_BPS = 0, per the mint prompt).
             prev = _attempt(start, max_cost, fresh_cost)
+            result = execute(home, prev["request_id"])
+            if not result.get("tx_hash"):
+                raise BawError(
+                    "mint execute returned no tx hash (status: {}). The "
+                    "mint may need confirmation in the Binance app — "
+                    "check status and try again.".format(
+                        result.get("status") or "unknown"))
+            return result
         except BawError as exc:
             last_err = exc
             if time.time() >= retry_deadline:
                 raise BawError(
-                    "mint preview failed after 30 minutes of retries: {}"
+                    "mint failed after 30 minutes of retries: {}"
                     .format(last_err))
             time.sleep(2)
-    result = execute(home, prev["request_id"])
-    if not result.get("tx_hash"):
-        raise BawError(
-            "mint execute returned no tx hash (status: {}). The mint may "
-            "need confirmation in the Binance app — check status and "
-            "try again.".format(result.get("status") or "unknown"))
-    return result
 
 
 def sell_ai(home, from_addr, ai_amount_wei):
