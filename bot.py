@@ -176,12 +176,12 @@ def main_keyboard():
          {"text": _bold("Check status"), "callback_data": "check_status"}],
         [{"text": _bold("Mint Ten Share"), "callback_data": "mint_10"},
          {"text": _bold("Mint Five Share"), "callback_data": "mint_5"}],
-        [{"text": _bold("Claim $3"), "callback_data": "claim_3"}],
+        [{"text": _bold("🧧 Claim $3"), "callback_data": "claim_3"}],
         [{"text": _bold("Help"), "callback_data": "help"},
          {"text": _bold("Disconnect"), "callback_data": "disconnect"}],
     ]
     if CHANNEL_INVITE_URL:
-        rows.append([{"text": _bold("Join Channel"), "url": CHANNEL_INVITE_URL}])
+        rows.append([{"text": _bold("📢 Join Channel"), "url": CHANNEL_INVITE_URL}])
     rows.append([
         {"text": _bold("Check Balance"), "callback_data": "check_balance"},
         {"text": _bold("Tasks"), "callback_data": "tasks"},

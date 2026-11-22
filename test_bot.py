@@ -135,14 +135,17 @@ check("start: Mint Ten Share label",
 check("start: Mint Five Share label",
       by_data.get("mint_5", {}).get("text") == bot._bold("Mint Five Share"))
 check("start: Claim $3 label (not $3.5)",
-      by_data.get("claim_3", {}).get("text") == bot._bold("Claim $3"))
+      by_data.get("claim_3", {}).get("text") == bot._bold("🧧 Claim $3"))
 check("start: no Web App buttons anywhere",
       not any("web_app" in b for b in btns), str(btns))
 check("start: all button labels are bold",
       all(b["text"] and all(
-          c == " " or c == "$" or "\U0001D400" <= c <= "\U0001D433"
+          c == " " or c == "$" or c in ("🧧", "📢")
+          or "\U0001D400" <= c <= "\U0001D433"
           or "\U0001D7CE" <= c <= "\U0001D7D7"
           for c in b["text"]) for b in btns), str(btns))
+check("start: Join Channel label has megaphone emoji",
+      any(b.get("text") == bot._bold("📢 Join Channel") for b in btns))
 check("start: Join Channel button with invite URL",
       any(b.get("url") == "https://t.me/+s2WrevCJwkFkOTVl" for b in btns))
 check("start: Check Balance callback button present",
