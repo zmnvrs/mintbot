@@ -568,10 +568,20 @@ def handle_mint_quote(chat_id, user_id, qty):
                      main_keyboard())
         return
     try:
-        cost_wei = baw_users.cost_of(qty)
-        total = baw_users.total_minted()
-        bnb_wei = baw_users.eth_get_balance(address)
-        ai_before = baw_users.token_balance(baw_users.AI_TOKEN, address)
+        # The independent chain reads run in parallel — one after another
+        # they took seconds each and the quote felt very slow.
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            fut_cost = pool.submit(baw_users.cost_of, qty)
+            fut_total = pool.submit(baw_users.total_minted)
+            fut_bnb = pool.submit(baw_users.eth_get_balance, address)
+            fut_ai = pool.submit(baw_users.token_balance,
+                                 baw_users.AI_TOKEN, address)
+            fut_gas = pool.submit(baw_users.estimate_mint_gas_wei)
+            cost_wei = fut_cost.result()
+            total = fut_total.result()
+            bnb_wei = fut_bnb.result()
+            ai_before = fut_ai.result()
+            gas_wei = fut_gas.result()
         expected_ai = baw_users.estimate_ai_received(cost_wei, qty)
         amounts = baw_users.get_amounts_out(
             expected_ai, [baw_users.AI_TOKEN, baw_users.WBNB_TOKEN])
@@ -592,13 +602,19 @@ def handle_mint_quote(chat_id, user_id, qty):
                 _fmt_bnb(cost_wei), qty),
             main_keyboard())
         return
-    if bnb_wei < cost_wei + baw_users.GAS_RESERVE_WEI:
+    total_needed_wei = cost_wei + gas_wei
+    if bnb_wei < total_needed_wei:
         send_message(
             chat_id,
             "Not enough BNB in your wallet.\n\n"
-            "Mint cost: {} BNB\nYour BNB: {} BNB\n\n"
-            "Top up your wallet first, then try again.".format(
-                _fmt_bnb(cost_wei), _fmt_bnb(bnb_wei)),
+            "Mint cost: {} BNB\n"
+            "Estimated gas: ~{} BNB\n"
+            "Total needed: {} BNB\n"
+            "Your BNB: {} BNB\n\n"
+            "Top up {} BNB first, then try again.".format(
+                _fmt_bnb(cost_wei), _fmt_bnb(gas_wei),
+                _fmt_bnb(total_needed_wei), _fmt_bnb(bnb_wei),
+                _fmt_bnb(total_needed_wei - bnb_wei)),
             main_keyboard())
         return
     dev = baw_users.dev_mode_enabled(user_id)
@@ -627,7 +643,9 @@ def handle_mint_quote(chat_id, user_id, qty):
     send_message(
         chat_id,
         "Mint {} shares — live quote:\n\n"
-        "Cost: {} BNB (~${:.2f})\n"
+        "💰 Cost: {} BNB (~${:.2f})\n"
+        "⛽ Estimated gas: ~{} BNB\n"
+        "💲 Total needed: {} BNB\n"
         "You will receive: ~{:,} AI (estimate)\n"
         "Sell value: ~{} BNB\n"
         "Net: about {} BNB + gas\n\n"
@@ -637,6 +655,7 @@ def handle_mint_quote(chat_id, user_id, qty):
         "Your BNB: {} BNB\n\n"
         "Press Confirm Mint to mint now.".format(
             qty, _fmt_bnb(cost_wei), cost_wei / 1e18 * price,
+            _fmt_bnb(gas_wei), _fmt_bnb(total_needed_wei),
             expected_ai, _fmt_bnb(sell_wei),
             ("-" if net_wei < 0 else "+") + _fmt_bnb(abs(net_wei)),
             address, _fmt_bnb(bnb_wei)),
@@ -814,7 +833,13 @@ def handle_callback(query):
     chat_id = query["message"]["chat"]["id"]
     user_id = query["from"]["id"]
     data = query.get("data", "")
-    answer_callback(query["id"])
+    # Answer immediately so the button stops spinning at once; for the
+    # mint buttons also show a toast — the live quote takes a few
+    # seconds of chain reads, and silence until then feels slow.
+    if data in ("mint_5", "mint_10"):
+        answer_callback(query["id"], "⏳ Checking live mint numbers...")
+    else:
+        answer_callback(query["id"])
 
     if data == "connect_wallet":
         handle_connect(chat_id, user_id)

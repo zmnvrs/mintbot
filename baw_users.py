@@ -63,6 +63,10 @@ MAX_COST_PER_SHARE_WEI = 8 * 10 ** 15
 USER_SHARE_PER_SHARE = 50_000_000
 # Extra BNB kept aside for gas when checking affordability.
 GAS_RESERVE_WEI = 10 ** 14  # 0.0001 BNB
+# Typical gas for one Agent ID mint call (the AGENTRA mint used ~169k;
+# 250k leaves margin for gas-price spikes). Used to estimate the mint's
+# gas cost in the quote: gas_price x MINT_GAS_UNITS.
+MINT_GAS_UNITS = 250000
 
 BSC_RPC = os.environ.get(
     "BSC_RPC", "https://bsc-dataseed.bnbchain.org").strip()
@@ -350,6 +354,28 @@ def eth_get_balance(address):
         return int(resp.json()["result"], 16)
     except Exception as exc:
         raise BawError("BSC RPC unreachable: {}".format(exc))
+
+
+def gas_price_wei():
+    """Live BSC gas price in wei (eth_gasPrice)."""
+    try:
+        resp = requests.post(
+            BSC_RPC,
+            json={"jsonrpc": "2.0", "method": "eth_gasPrice",
+                  "params": [], "id": 1},
+            timeout=20)
+        res = resp.json()
+    except Exception as exc:
+        raise BawError("BSC RPC unreachable: {}".format(exc))
+    if "error" in res:
+        raise BawError("BSC RPC error: {}".format(res["error"]))
+    return int(res.get("result", "0x0"), 16)
+
+
+def estimate_mint_gas_wei():
+    """Estimated gas cost of one mint in wei (live gas price x typical
+    gas units). An estimate — the exact gas is set by the network."""
+    return gas_price_wei() * MINT_GAS_UNITS
 
 
 def cost_of(qty):

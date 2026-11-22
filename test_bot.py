@@ -358,6 +358,7 @@ baw_users.get_amounts_out = lambda amt, path: [amt, 76900000000000000 if amt > 1
 baw_users.dev_mode_enabled = lambda uid: True
 bot.bnb_price_usd = lambda: 600.0
 baw_users.paid_once = lambda addr: False
+baw_users.estimate_mint_gas_wei = lambda: 20 * 10 ** 12  # 0.00002 BNB gas
 
 # Referral: every mint from this bot must use W1 (the owner) as referrer.
 _W1_HEX = "e012133823df5452de9c10a73fe935d26b995a97"
@@ -379,6 +380,10 @@ client.post("/webhook", json=callback_update(111, "mint_10"))
 texts = texts_of(calls)
 check("mint: quote shows cost 0.07800 BNB",
       any("0.07800 BNB" in t for t in texts), str(texts))
+check("mint: quote shows estimated gas + total needed",
+      any("Estimated gas: ~0.00002 BNB" in t
+          and "Total needed: 0.07802 BNB" in t for t in texts),
+      str(texts))
 check("mint: quote shows expected AI + sell value",
       any("11,380,000,000,000" in t and "0.07690" in t for t in texts),
       str(texts))
