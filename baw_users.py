@@ -619,16 +619,20 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
     revert) and maxCost, so a preview built on stale numbers reverts
     (baw error 351805). Each attempt re-reads totalMinted AND costOf
     fresh, uses expected_start == fresh total + 1 exactly (no ahead
-    buffer — the contract wants the live index), and sets maxCost 2%
-    above the live cost so a fast-rising price does not make the cap
-    too low by simulation time. Retries up to MINT_PREVIEW_ATTEMPTS
-    times, each with fresh reads and an explicit gas limit (baw can
-    under-estimate gas). Raises BawError on any failure.
+    buffer — the contract wants the live index), and sets the calldata
+    maxCost 0.5% above the live cost so a fast-rising price does not
+    make the cap too low by simulation time. The BNB actually sent
+    (preview --value) is the EXACT live cost, not the buffered
+    maxCost — the contract only needs msg.value >= actual cost, and
+    sending the buffered amount wastes the tight balance's gas
+    headroom in the preview's balance check (value + gas <= balance).
+    Retries up to MINT_PREVIEW_ATTEMPTS times, each with fresh reads.
+    Raises BawError on any failure.
     """
-    def _attempt(start, cost_wei, gas_limit=None):
+    def _attempt(start, max_cost_wei, value_wei, gas_limit=None):
         deadline = int(time.time()) + 600
-        data = mint_calldata(qty, cost_wei, start, deadline)
-        prev = preview(home, from_addr, MINT_CONTRACT, cost_wei, data,
+        data = mint_calldata(qty, max_cost_wei, start, deadline)
+        prev = preview(home, from_addr, MINT_CONTRACT, value_wei, data,
                        gas_limit=gas_limit)
         if not preview_is_clean(prev):
             raise BawError("mint preview not clean (status: {}). "
@@ -648,7 +652,9 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
             # (~200-250k). An explicit 400k cap inflated the preview's
             # balance check (value + gas_limit * gas_price) and pushed
             # tight balances over the edge (351805).
-            prev = _attempt(start, max_cost)
+            # Value sent = exact live cost; maxCost param stays
+            # buffered (0.5%) so the contract's cap still has room.
+            prev = _attempt(start, max_cost, fresh_cost)
             break
         except BawError as exc:
             last_err = exc
