@@ -169,95 +169,78 @@ def _bold(text):
     return "".join(out)
 
 
-# Premium animated emojis for the buttons (icon_custom_emoji_id renders
-# the icon before the button text). Picked from the user's packs:
-# yuncloud01, NewsEmoji, EmojisBinance, ZEROX_660_by_TgEmodziBot.
-# The user's own pack (shield/box) is kept below for reference.
-EMOJI_CONNECT = "5271604874419647061"   # NewsEmoji link — Connect Wallet
-EMOJI_STATUS = "5337270934350870454"    # EmojisBinance check — Check status
-EMOJI_MINT10 = "6267068789146260253"    # ZEROX money bag — Mint Ten Share
-EMOJI_MINT5 = "5427168083074628963"     # NewsEmoji diamond — Mint Five Share
-EMOJI_CLAIM = "6269214795325510848"     # ZEROX gift — Claim $3
-EMOJI_HELP = "5436113877181941026"      # NewsEmoji question — Help
-EMOJI_DISCONNECT = "5240241223632954241"  # NewsEmoji prohibited — Disconnect
-EMOJI_JOIN = "5424818078833715060"      # NewsEmoji megaphone — Join Channel
-EMOJI_BALANCE = "5409048419211682843"   # NewsEmoji banknote — Check Balance
-EMOJI_TASKS = "5397782960512444700"     # NewsEmoji pin — Tasks
-# User's own pack (cqxdeh_e_my_channel_ecbec05e60_bls4x_by_emojimagentabot):
-EMOJI_SHIELD = "6053310040645837526"  # first emoji: red CRYPTO CRAVERS shield
-EMOJI_BOX = "6053011205411317266"     # box emoji: black mystery box
+# NOTE: premium custom-emoji icons (icon_custom_emoji_id) were tried for
+# the buttons (ids from the user's packs + their own shield/box pack)
+# but they do not render on the owner's Telegram, so the buttons use
+# plain Unicode emojis in the text instead. The premium ids are kept
+# in the project notes if they are ever needed again.
 
 
 def main_keyboard():
-    """Inline keyboard — the admin bot's seven buttons, then the rest."""
+    """Inline keyboard — the admin bot's seven buttons, then the rest.
+
+    Buttons use plain Unicode emojis in the text: the premium
+    custom-emoji icons (icon_custom_emoji_id) do not render on the
+    owner's Telegram, so the visible emoji is part of the label.
+    """
     rows = [
-        [{"text": _bold("Connect Wallet"), "callback_data": "connect_wallet",
-          "icon_custom_emoji_id": EMOJI_CONNECT},
-         {"text": _bold("Check status"), "callback_data": "check_status",
-          "icon_custom_emoji_id": EMOJI_STATUS}],
-        [{"text": _bold("Mint Ten Share"), "callback_data": "mint_10",
-          "icon_custom_emoji_id": EMOJI_MINT10},
-         {"text": _bold("Mint Five Share"), "callback_data": "mint_5",
-          "icon_custom_emoji_id": EMOJI_MINT5}],
-        [{"text": _bold("Claim $3"), "callback_data": "claim_3",
-          "icon_custom_emoji_id": EMOJI_CLAIM}],
-        [{"text": _bold("Help"), "callback_data": "help",
-          "icon_custom_emoji_id": EMOJI_HELP},
-         {"text": _bold("Disconnect"), "callback_data": "disconnect",
-          "icon_custom_emoji_id": EMOJI_DISCONNECT}],
+        [{"text": _bold("🔗 Connect Wallet"), "callback_data": "connect_wallet"},
+         {"text": _bold("✅ Check status"), "callback_data": "check_status"}],
+        [{"text": _bold("💰 Mint Ten Share"), "callback_data": "mint_10"},
+         {"text": _bold("💎 Mint Five Share"), "callback_data": "mint_5"}],
+        [{"text": _bold("🎁 Claim $3"), "callback_data": "claim_3"}],
+        [{"text": _bold("❓ Help"), "callback_data": "help"},
+         {"text": _bold("🚫 Disconnect"), "callback_data": "disconnect"}],
     ]
     if CHANNEL_INVITE_URL:
-        rows.append([{"text": _bold("Join Channel"), "url": CHANNEL_INVITE_URL,
-                     "icon_custom_emoji_id": EMOJI_JOIN}])
+        rows.append([{"text": _bold("📣 Join Channel"), "url": CHANNEL_INVITE_URL}])
     rows.append([
-        {"text": _bold("Check Balance"), "callback_data": "check_balance",
-         "icon_custom_emoji_id": EMOJI_BALANCE},
-        {"text": _bold("Tasks"), "callback_data": "tasks",
-         "icon_custom_emoji_id": EMOJI_TASKS},
+        {"text": _bold("💵 Check Balance"), "callback_data": "check_balance"},
+        {"text": _bold("📌 Tasks"), "callback_data": "tasks"},
     ])
     return {"inline_keyboard": rows}
 
 
 def welcome_text():
     text = (
-        "Welcome!\n\n"
-        "Earn {} per account.\n\n"
-        "How it works:\n"
-        "1. <b>Connect Wallet</b> — scan the Binance QR in the app to "
+        "👋 <b>Welcome to Free Mint Crypto Cravers!</b>\n\n"
+        "🎁 Earn {}.\n\n"
+        "✨ <b>How it works:</b>\n"
+        "1️⃣ 🔗 <b>Connect Wallet</b> — scan the Binance QR in the app to "
         "pair your agent wallet.\n"
-        "2. <b>Mint Five Share</b> or <b>Mint Ten Share</b> — mint from "
+        "2️⃣ 💰 <b>Mint Five Share</b> or <b>Mint Ten Share</b> — mint from "
         "your paired wallet. The referral goes to the owner.\n"
-        "3. <b>Claim $3</b> — after your first mint through the bot, "
+        "3️⃣ 🎁 <b>Claim $3</b> — after your first mint through the bot, "
         "one claim per account.\n\n"
-        "You need a .ai Agent ID in your wallet and enough BNB for the "
+        "⚠️ You need a .ai Agent ID in your wallet and enough BNB for the "
         "mint cost + gas. Turn on Developer Mode in your Agentic "
         "Wallet settings first."
     ).format(REWARD_TEXT)
     if OWNER_CONTACT:
-        text += "\n\nOwner: {}".format(OWNER_CONTACT)
+        text += "\n\n👤 Owner: {}".format(OWNER_CONTACT)
     return text
 
 
 def help_text():
     return (
-        "How to use this bot:\n\n"
-        "1. <b>Connect Wallet</b> — I send a Binance sign-in QR. Open "
+        "❓ <b>How to use this bot:</b>\n\n"
+        "1️⃣ 🔗 <b>Connect Wallet</b> — I send a Binance sign-in QR. Open "
         "the Binance app, scan it, and your agent wallet pairs with "
         "the bot. The QR expires in ~5 minutes — if it expires, press "
         "Connect Wallet again for a new one.\n\n"
-        "2. <b>Check status</b> — shows your paired wallet address, "
+        "2️⃣ ✅ <b>Check status</b> — shows your paired wallet address, "
         "BNB balance, Agent ID status and mint status. Press it after "
         "scanning the QR to finish pairing.\n\n"
-        "3. <b>Mint Five Share</b> / <b>Mint Ten Share</b> — mints "
+        "3️⃣ 💰 <b>Mint Five Share</b> / <b>Mint Ten Share</b> — mints "
         "Agent ID (AI) shares from your paired wallet. I show the live "
         "cost first — you confirm before anything is sent. After the "
         "mint I immediately sell the AI you received and report what "
         "you got back (the sell is not a profit — it gets your BNB "
         "back, minus about $0.60 + gas).\n\n"
-        "4. <b>Claim $3</b> — after your first mint through the bot, "
+        "4️⃣ 🎁 <b>Claim $3</b> — after your first mint through the bot, "
         "one $3 USDT claim per account.\n\n"
-        "5. <b>Disconnect</b> — unpairs your wallet from the bot.\n\n"
-        "You need: a .ai Agent ID in your wallet, enough BNB for the "
+        "5️⃣ 🚫 <b>Disconnect</b> — unpairs your wallet from the bot.\n\n"
+        "⚠️ You need: a .ai Agent ID in your wallet, enough BNB for the "
         "mint cost + gas, and Developer Mode ON in your Agentic "
         "Wallet settings (Binance app → Agentic Wallet → Settings → "
         "Developer Mode). Your wallet is only ever used when YOU tap "

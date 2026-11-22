@@ -131,26 +131,25 @@ for data in ("connect_wallet", "check_status", "mint_10", "mint_5",
              "claim_3", "help", "disconnect"):
     check("start: {} button present".format(data), data in by_data, str(btns))
 check("start: Mint Ten Share label",
-      by_data.get("mint_10", {}).get("text") == bot._bold("Mint Ten Share"))
+      by_data.get("mint_10", {}).get("text") == bot._bold("💰 Mint Ten Share"))
 check("start: Mint Five Share label",
-      by_data.get("mint_5", {}).get("text") == bot._bold("Mint Five Share"))
+      by_data.get("mint_5", {}).get("text") == bot._bold("💎 Mint Five Share"))
 check("start: Claim $3 label (not $3.5)",
-      by_data.get("claim_3", {}).get("text") == bot._bold("Claim $3"))
-check("start: Claim button has gift custom-emoji icon",
-      by_data.get("claim_3", {}).get("icon_custom_emoji_id")
-      == bot.EMOJI_CLAIM)
-check("start: every main button has a custom-emoji icon",
-      all(b.get("icon_custom_emoji_id") for b in btns), str(btns))
+      by_data.get("claim_3", {}).get("text") == bot._bold("🎁 Claim $3"))
+check("start: Claim button shows gift emoji in its text",
+      by_data.get("claim_3", {}).get("text", "").startswith("🎁"))
+check("start: every main button shows an emoji in its text",
+      all(b.get("text", "")[:1] not in ("",) and not b["text"][0].isalnum()
+          for b in btns), str(btns))
 check("start: no Web App buttons anywhere",
       not any("web_app" in b for b in btns), str(btns))
-check("start: all button labels are bold",
+check("start: all button labels are bold (after the leading emoji)",
       all(b["text"] and all(
           c == " " or c == "$" or "\U0001D400" <= c <= "\U0001D433"
           or "\U0001D7CE" <= c <= "\U0001D7D7"
-          for c in b["text"]) for b in btns), str(btns))
-check("start: Join Channel label + megaphone custom-emoji icon",
-      any(b.get("text") == bot._bold("Join Channel")
-          and b.get("icon_custom_emoji_id") == bot.EMOJI_JOIN
+          for c in b["text"][1:]) for b in btns), str(btns))
+check("start: Join Channel label + megaphone emoji in text",
+      any(b.get("text") == bot._bold("📣 Join Channel")
           for b in btns))
 check("start: Join Channel button with invite URL",
       any(b.get("url") == "https://t.me/+s2WrevCJwkFkOTVl" for b in btns))
