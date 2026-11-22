@@ -412,7 +412,8 @@ baw_users.eth_get_balance = lambda addr: 10 ** 15  # 0.001 BNB
 calls.clear()
 client.post("/webhook", json=callback_update(111, "mint_10"))
 check("mint: insufficient BNB -> top up message",
-      any("BNB কম আছে" in t and "লাগবে:" in t for t in texts_of(calls)))
+      any("BNB কম আছে" in t and "লাগবে:" in t
+          and "আর লাগবে:" in t for t in texts_of(calls)))
 baw_users.eth_get_balance = lambda addr: 10 ** 18
 
 # G5: Developer Mode off -> instructions, no quote

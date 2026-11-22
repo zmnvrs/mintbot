@@ -570,17 +570,20 @@ def handle_mint_quote(chat_id, user_id, qty):
     try:
         # The independent chain reads run in parallel — one after another
         # they took seconds each and the quote felt very slow.
-        with ThreadPoolExecutor(max_workers=5) as pool:
+        with ThreadPoolExecutor(max_workers=6) as pool:
             fut_cost = pool.submit(baw_users.cost_of, qty)
             fut_total = pool.submit(baw_users.total_minted)
             fut_bnb = pool.submit(baw_users.eth_get_balance, address)
             fut_ai = pool.submit(baw_users.token_balance,
                                  baw_users.AI_TOKEN, address)
+            fut_usdt = pool.submit(baw_users.token_balance,
+                                   baw_users.USDT_TOKEN, address)
             fut_gas = pool.submit(baw_users.estimate_mint_gas_wei)
             cost_wei = fut_cost.result()
             total = fut_total.result()
             bnb_wei = fut_bnb.result()
             ai_before = fut_ai.result()
+            usdt_wei = fut_usdt.result()
             gas_wei = fut_gas.result()
         expected_ai = baw_users.estimate_ai_received(cost_wei, qty)
         amounts = baw_users.get_amounts_out(
@@ -604,6 +607,12 @@ def handle_mint_quote(chat_id, user_id, qty):
         return
     total_needed_wei = cost_wei + gas_wei
     if bnb_wei < total_needed_wei:
+        short_wei = total_needed_wei - bnb_wei
+        usdt_hint = ""
+        if usdt_wei > 0:
+            usdt_hint = (
+                "\n\n💵 আপনার wallet এ {:.2f} USDT আছে — swap করে BNB "
+                "নিতে পারেন।".format(usdt_wei / 10 ** 18))
         send_message(
             chat_id,
             "❌ BNB কম আছে।\n\n"
@@ -611,12 +620,15 @@ def handle_mint_quote(chat_id, user_id, qty):
             "Balance: {} BNB\n"
             "Mint cost: {} BNB\n"
             "Gas: ~{} BNB\n"
-            "লাগবে: ~{} BNB (${:.2f})\n\n"
-            "BNB top-up করে আবার Mint চাপুন।".format(
+            "লাগবে: ~{} BNB (${:.2f})\n"
+            "আর লাগবে: {} BNB (~${:.2f}){}"
+            "\n\nBNB top-up করে আবার Mint চাপুন।".format(
                 address, _fmt_bnb(bnb_wei),
                 _fmt_bnb(cost_wei), _fmt_bnb(gas_wei),
                 _fmt_bnb(total_needed_wei),
-                total_needed_wei / 1e18 * price),
+                total_needed_wei / 1e18 * price,
+                _fmt_bnb(short_wei), short_wei / 1e18 * price,
+                usdt_hint),
             main_keyboard())
         return
     dev = baw_users.dev_mode_enabled(user_id)
