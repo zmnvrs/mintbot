@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: mintbot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn bot:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: MINT_URL
+        sync: false
+      - key: MINT_URL_5
+        sync: false
+      - key: MINT_URL_10
+        sync: false
+      - key: WC_PROJECT_ID
+        sync: false
+      - key: ENABLE_INSTANT_SELL
+        value: "0"
+      - key: MIN_BNB_USD
+        value: "41"
+      - key: TASK_CHANNELS
+        sync: false
+      - key: REWARD_TEXT
+        value: "$3 per account"
+      - key: WEBHOOK_URL
+        sync: false
