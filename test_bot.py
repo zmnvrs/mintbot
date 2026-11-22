@@ -125,6 +125,9 @@ client = bot.app.test_client()
 check("health: /health is 200", client.get("/health").status_code == 200)
 resp = client.post("/webhook", json=start_update())
 check("start: /webhook /start returns 200", resp.status_code == 200)
+check("start: redpack sticker sent before welcome",
+      any(m == "sendSticker" and p.get("sticker") == bot.REDPACK_STICKER
+          for m, p in calls), str(calls))
 btns = buttons_of(calls)
 by_data = {b.get("callback_data"): b for b in btns if "callback_data" in b}
 for data in ("connect_wallet", "check_status", "mint_10", "mint_5",
@@ -535,6 +538,9 @@ client.post("/webhook", json=callback_update(111, "claim_3"))
 texts = texts_of(calls)
 check("claim: success -> USDT sent with tx",
       any("USDT sent" in t and "0xclaimtx" in t for t in texts), str(texts))
+check("claim: success -> redpack sticker sent",
+      any(m == "sendSticker" and p.get("sticker") == bot.REDPACK_STICKER
+          for m, p in calls), str(calls))
 check("claim: pays exactly $3 in USDT wei to the user",
       pay_calls == [(USER_ADDR, 3 * 10 ** 18)], str(pay_calls))
 check("claim: marked claimed with tx",

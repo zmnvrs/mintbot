@@ -143,6 +143,19 @@ def send_photo(chat_id, photo_bytes, caption=None, reply_markup=None):
         return None
 
 
+def send_sticker(chat_id, sticker):
+    """Send a sticker by file_id (e.g. the animated redpack box)."""
+    return tg("sendSticker", {"chat_id": chat_id, "sticker": sticker})
+
+
+# Animated redpack (mystery box) sticker from the user's own pack
+# (ugrjfy_conv_cqxdeh_e_my_channel_ecbec05e60_bl_by_emojimagentabot).
+# It is a regular animated sticker, not a custom emoji, so it is sent as
+# a sticker message (it cannot sit inside a button or message text).
+REDPACK_STICKER = ("CAACAgUAAxUAAWsCy_hy7dfjnYUabl1altfn9ZqcAAJXJgACHZMQVME"
+                   "pAAFGr7pSyj0E")
+
+
 def answer_callback(callback_query_id, text=None):
     payload = {"callback_query_id": callback_query_id}
     if text:
@@ -712,6 +725,7 @@ def handle_claim(chat_id, user_id):
     record["claimed"] = True
     record["claimed_tx"] = tx_hash
     _save_record(user_id, record)
+    send_sticker(chat_id, REDPACK_STICKER)
     send_message(
         chat_id,
         "✅ ${:.2f} USDT sent to <code>{}</code>!\n\n"
@@ -724,6 +738,7 @@ def handle_claim(chat_id, user_id):
 def handle_start(chat_id, first_name=""):
     user_state.pop(chat_id, None)
     greeting = "Hi {}!\n\n".format(first_name) if first_name else ""
+    send_sticker(chat_id, REDPACK_STICKER)
     send_message(chat_id, greeting + welcome_text(), main_keyboard())
 
 
