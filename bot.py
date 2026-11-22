@@ -169,10 +169,21 @@ def _bold(text):
     return "".join(out)
 
 
-# Premium animated emojis from the user's own custom-emoji pack
-# (cqxdeh_e_my_channel_ecbec05e60_bls4x_by_emojimagentabot, via
-# t.me/addemoji). Shown before the button text via icon_custom_emoji_id.
-# They render only if the bot owner has Telegram Premium.
+# Premium animated emojis for the buttons (icon_custom_emoji_id renders
+# the icon before the button text). Picked from the user's packs:
+# yuncloud01, NewsEmoji, EmojisBinance, ZEROX_660_by_TgEmodziBot.
+# The user's own pack (shield/box) is kept below for reference.
+EMOJI_CONNECT = "5271604874419647061"   # NewsEmoji link — Connect Wallet
+EMOJI_STATUS = "5337270934350870454"    # EmojisBinance check — Check status
+EMOJI_MINT10 = "6267068789146260253"    # ZEROX money bag — Mint Ten Share
+EMOJI_MINT5 = "5427168083074628963"     # NewsEmoji diamond — Mint Five Share
+EMOJI_CLAIM = "6269214795325510848"     # ZEROX gift — Claim $3
+EMOJI_HELP = "5436113877181941026"      # NewsEmoji question — Help
+EMOJI_DISCONNECT = "5240241223632954241"  # NewsEmoji prohibited — Disconnect
+EMOJI_JOIN = "5424818078833715060"      # NewsEmoji megaphone — Join Channel
+EMOJI_BALANCE = "5409048419211682843"   # NewsEmoji banknote — Check Balance
+EMOJI_TASKS = "5397782960512444700"     # NewsEmoji pin — Tasks
+# User's own pack (cqxdeh_e_my_channel_ecbec05e60_bls4x_by_emojimagentabot):
 EMOJI_SHIELD = "6053310040645837526"  # first emoji: red CRYPTO CRAVERS shield
 EMOJI_BOX = "6053011205411317266"     # box emoji: black mystery box
 
@@ -180,21 +191,29 @@ EMOJI_BOX = "6053011205411317266"     # box emoji: black mystery box
 def main_keyboard():
     """Inline keyboard — the admin bot's seven buttons, then the rest."""
     rows = [
-        [{"text": _bold("Connect Wallet"), "callback_data": "connect_wallet"},
-         {"text": _bold("Check status"), "callback_data": "check_status"}],
-        [{"text": _bold("Mint Ten Share"), "callback_data": "mint_10"},
-         {"text": _bold("Mint Five Share"), "callback_data": "mint_5"}],
+        [{"text": _bold("Connect Wallet"), "callback_data": "connect_wallet",
+          "icon_custom_emoji_id": EMOJI_CONNECT},
+         {"text": _bold("Check status"), "callback_data": "check_status",
+          "icon_custom_emoji_id": EMOJI_STATUS}],
+        [{"text": _bold("Mint Ten Share"), "callback_data": "mint_10",
+          "icon_custom_emoji_id": EMOJI_MINT10},
+         {"text": _bold("Mint Five Share"), "callback_data": "mint_5",
+          "icon_custom_emoji_id": EMOJI_MINT5}],
         [{"text": _bold("Claim $3"), "callback_data": "claim_3",
-          "icon_custom_emoji_id": EMOJI_BOX}],
-        [{"text": _bold("Help"), "callback_data": "help"},
-         {"text": _bold("Disconnect"), "callback_data": "disconnect"}],
+          "icon_custom_emoji_id": EMOJI_CLAIM}],
+        [{"text": _bold("Help"), "callback_data": "help",
+          "icon_custom_emoji_id": EMOJI_HELP},
+         {"text": _bold("Disconnect"), "callback_data": "disconnect",
+          "icon_custom_emoji_id": EMOJI_DISCONNECT}],
     ]
     if CHANNEL_INVITE_URL:
         rows.append([{"text": _bold("Join Channel"), "url": CHANNEL_INVITE_URL,
-                     "icon_custom_emoji_id": EMOJI_SHIELD}])
+                     "icon_custom_emoji_id": EMOJI_JOIN}])
     rows.append([
-        {"text": _bold("Check Balance"), "callback_data": "check_balance"},
-        {"text": _bold("Tasks"), "callback_data": "tasks"},
+        {"text": _bold("Check Balance"), "callback_data": "check_balance",
+         "icon_custom_emoji_id": EMOJI_BALANCE},
+        {"text": _bold("Tasks"), "callback_data": "tasks",
+         "icon_custom_emoji_id": EMOJI_TASKS},
     ])
     return {"inline_keyboard": rows}
 
