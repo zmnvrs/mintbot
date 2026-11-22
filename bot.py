@@ -64,7 +64,9 @@ import json
 import os
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from flask import Flask, request, jsonify
@@ -97,6 +99,11 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 TELEGRAM_API = "https://api.telegram.org/bot{}".format(BOT_TOKEN)
 BINANCE_TICKER = "https://api.binance.com/api/v3/ticker/price"
 BSCSCAN_TX = "https://bscscan.com/tx/{}"
+
+# Crypto mystery-box sticker (user's regular sticker pack, black box with
+# a red lid and "?") — sent once when Claim $3 is pressed.
+BOX_STICKER_ID = ("CAACAgUAAxUAAWsCy_hy7dfjnYUabl1altfn9ZqcAAJXJgACHZMQ"
+                  "VMEpAAFGr7pSyj0E")
 
 # chat_id -> {"step": "awaiting_address"} — memory only, wiped on restart.
 user_state = {}
@@ -141,6 +148,12 @@ def send_photo(chat_id, photo_bytes, caption=None, reply_markup=None):
     except Exception as exc:
         app.logger.warning("telegram sendPhoto failed: %s", exc)
         return None
+
+
+def send_sticker(chat_id, sticker_file_id):
+    """Send a sticker by file_id (e.g. the Crypto mystery-box sticker)."""
+    return tg("sendSticker",
+              {"chat_id": chat_id, "sticker": sticker_file_id})
 
 
 def answer_callback(callback_query_id, text=None):
@@ -193,7 +206,7 @@ def main_keyboard():
          {"text": _bold("🚫 Disconnect"), "callback_data": "disconnect"}],
     ]
     if CHANNEL_INVITE_URL:
-        rows.append([{"text": _bold("📣 Join Channel"), "url": CHANNEL_INVITE_URL}])
+        rows.append([{"text": _bold("🛡 Join Channel"), "url": CHANNEL_INVITE_URL}])
     rows.append([
         {"text": _bold("💵 Check Balance"), "callback_data": "check_balance"},
         {"text": _bold("📌 Tasks"), "callback_data": "tasks"},
@@ -261,11 +274,24 @@ def bnb_balance(address):
     return wei / 1e18
 
 
+# BNB price cache (120s) — the Binance ticker is slow/geo-blocked from
+# this machine, so repeated status/balance checks reuse one price.
+_price_cache = {"value": None, "at": 0.0}
+_PRICE_TTL_S = 120
+
+
 def bnb_price_usd():
     """BNB price in USD from the Binance public ticker (no API key)."""
+    now = time.time()
+    if (_price_cache["value"] is not None
+            and now - _price_cache["at"] < _PRICE_TTL_S):
+        return _price_cache["value"]
     resp = requests.get(BINANCE_TICKER, params={"symbol": "BNBUSDT"},
                         timeout=15)
-    return float(resp.json()["price"])
+    value = float(resp.json()["price"])
+    _price_cache["value"] = value
+    _price_cache["at"] = now
+    return value
 
 
 # ---------------------------------------------------------------- tasks
@@ -377,26 +403,52 @@ def handle_connect(chat_id, user_id):
 
 
 def _paired_status_lines(user_id, record):
-    """Status lines for a paired wallet (address, BNB, Agent ID, mints)."""
+    """Status lines for a paired wallet (address, BNB, Agent ID, mints).
+
+    The three baw reads run in parallel — each spawns a subprocess and
+    takes seconds, so running them one after another made Check status
+    feel very slow.
+    """
     address = record.get("paired_address")
     lines = ["Connected wallet:\n<code>{}</code>".format(address)]
-    try:
-        bnb = baw_users.eth_get_balance(address) / 1e18
-        lines.append("BNB: {:.5f}".format(bnb))
-    except BawError:
+
+    def _balance():
+        try:
+            return baw_users.eth_get_balance(address) / 1e18
+        except BawError:
+            return None
+
+    def _agent():
+        try:
+            return baw_users.get_agent_id(user_id)
+        except BawError:
+            return (False, None)
+
+    def _paid():
+        try:
+            return baw_users.paid_once(address)
+        except BawError:
+            return False
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        fut_balance = pool.submit(_balance)
+        fut_agent = pool.submit(_agent)
+        fut_paid = pool.submit(_paid)
+        bnb = fut_balance.result()
+        claimed, agent_id = fut_agent.result()
+        paid_before = fut_paid.result()
+    if bnb is None:
         lines.append("BNB: (could not read right now)")
-    claimed, agent_id = baw_users.get_agent_id(user_id)
+    else:
+        lines.append("BNB: {:.5f}".format(bnb))
     if claimed and agent_id:
         lines.append("Agent ID: {} ✅".format(agent_id))
     elif claimed:
         lines.append("Agent ID: claimed ✅")
     else:
         lines.append("Agent ID: not claimed ❌ — minting needs a .ai Agent ID")
-    try:
-        if baw_users.paid_once(address):
-            lines.append("Minted before: yes")
-    except BawError:
-        pass
+    if paid_before:
+        lines.append("Minted before: yes")
     minted = record.get("minted_count", 0)
     lines.append("Mints through this bot: {}".format(minted))
     lines.append("Claim $3: {}".format(
@@ -672,6 +724,8 @@ def handle_mint_confirm(chat_id, user_id, qty):
 # ----------------------------------------------------------------- claim
 
 def handle_claim(chat_id, user_id):
+    # The Crypto mystery-box sticker, once per Claim press.
+    send_sticker(chat_id, BOX_STICKER_ID)
     record = _get_record(user_id)
     address = record.get("paired_address")
     if not address:
@@ -914,6 +968,19 @@ def set_webhook():
     return jsonify(result or {"ok": False, "error": "no response from Telegram"})
 
 
+def _dispatch_update(update):
+    """Handle one update (callback or message). Runs in its own thread
+    so a slow handler (baw subprocess calls take seconds) never blocks
+    the next button press."""
+    try:
+        if "callback_query" in update:
+            handle_callback(update["callback_query"])
+        elif "message" in update:
+            handle_message(update["message"])
+    except Exception as exc:  # never let one update kill the loop
+        app.logger.warning("update handler failed: %s", exc)
+
+
 def run_polling():
     """Poll getUpdates in a loop (for running without a public URL).
 
@@ -932,10 +999,8 @@ def run_polling():
             updates = (res or {}).get("result") or []
             for update in updates:
                 offset = update["update_id"] + 1
-                if "callback_query" in update:
-                    handle_callback(update["callback_query"])
-                elif "message" in update:
-                    handle_message(update["message"])
+                threading.Thread(target=_dispatch_update, args=(update,),
+                                 daemon=True).start()
         except Exception as exc:  # network blip — wait and retry
             app.logger.warning("polling error: %s", exc)
             time.sleep(5)

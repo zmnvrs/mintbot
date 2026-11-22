@@ -148,8 +148,8 @@ check("start: all button labels are bold (after the leading emoji)",
           c == " " or c == "$" or "\U0001D400" <= c <= "\U0001D433"
           or "\U0001D7CE" <= c <= "\U0001D7D7"
           for c in b["text"][1:]) for b in btns), str(btns))
-check("start: Join Channel label + megaphone emoji in text",
-      any(b.get("text") == bot._bold("📣 Join Channel")
+check("start: Join Channel label + shield emoji in text",
+      any(b.get("text") == bot._bold("🛡 Join Channel")
           for b in btns))
 check("start: Join Channel button with invite URL",
       any(b.get("url") == "https://t.me/+s2WrevCJwkFkOTVl" for b in btns))
@@ -519,6 +519,11 @@ calls.clear()
 client.post("/webhook", json=callback_update(111, "claim_3"))
 check("claim: no mint yet -> needs a mint first",
       any("needs a mint first" in t for t in texts_of(calls)))
+check("claim: mystery-box sticker sent once on Claim press",
+      [(m, p) for m, p in calls if m == "sendSticker"] == [
+          ("sendSticker",
+           {"chat_id": 111, "sticker": bot.BOX_STICKER_ID})],
+      str(calls))
 
 # H2: minted but W1 pool empty -> plain message, claim NOT used up
 baw_users.save_record(111, {"paired_address": USER_ADDR, "minted_count": 1})
