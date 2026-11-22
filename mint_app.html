@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Mint Agent ID (AI)</title>
+<!--
+  Telegram Web App mini app — direct WalletConnect mint for the Agent ID
+  (AI) token. The mint goes straight from the user's wallet to the BSC
+  chain (no Binance preview/simulation, which cannot simulate this
+  mint). The referrer is ALWAYS W1 (the owner's wallet).
+
+  Placeholders below are replaced at runtime by the bot's /mint-app
+  route from the server environment — this file never holds a real
+  project ID or secret, so it is safe to commit:
+    __WALLETCONNECT_PROJECT_ID__  WalletConnect project ID (env)
+    __MINT_CONTRACT__             Agent ID mint contract (BSC 56)
+    __REFERRER_W1__               referrer for every mint (W1)
+    __AI_TOKEN__ / __WBNB_TOKEN__ / __PANCAKE_ROUTER__
+    __CHAIN_ID__                  56 (BSC)
+-->
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2/dist/umd/index.min.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+         background: var(--tg-theme-bg-color, #fff);
+         color: var(--tg-theme-text-color, #111); padding: 16px; }
+  h1 { font-size: 20px; margin: 4px 0 2px; }
+  .sub { color: var(--tg-theme-hint-color, #777); font-size: 13px; margin-bottom: 14px; }
+  .card { background: var(--tg-theme-secondary-bg-color, #f4f4f5);
+          border-radius: 12px; padding: 14px; margin: 10px 0; }
+  .row { display: flex; justify-content: space-between; gap: 10px;
+         padding: 5px 0; font-size: 15px; }
+  .row b { text-align: right; }
+  .muted { color: var(--tg-theme-hint-color, #777); font-size: 13px; }
+  button { width: 100%; padding: 14px; margin: 8px 0; font-size: 16px;
+           font-weight: 700; border: 0; border-radius: 12px; cursor: pointer;
+           background: var(--tg-theme-button-color, #2481cc);
+           color: var(--tg-theme-button-text-color, #fff); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.secondary { background: var(--tg-theme-secondary-bg-color, #e4e4e7);
+                     color: var(--tg-theme-text-color, #111); }
+  .err { background: #fde8e8; color: #9b1c1c; border-radius: 12px;
+         padding: 12px; margin: 10px 0; font-size: 14px; }
+  .ok { background: #e6f6e6; color: #14532d; border-radius: 12px;
+        padding: 12px; margin: 10px 0; font-size: 14px; word-break: break-all; }
+  .addr { font-family: monospace; font-size: 13px; word-break: break-all; }
+  .hidden { display: none; }
+  a { color: var(--tg-theme-link-color, #2481cc); }
+</style>
+</head>
+<body>
+<h1>💰 Mint Agent ID (AI)</h1>
+<div class="sub">Direct on-chain mint — 2–3 seconds. Referral goes to the owner (W1).</div>
+
+<div id="loading" class="card">⌛ Live quote লোড হচ্ছে...</div>
+<div id="error" class="err hidden"></div>
+
+<div id="quote" class="hidden">
+  <div class="card">
+    <div class="row"><span>Shares</span><b id="q-qty">–</b></div>
+    <div class="row"><span>💰 Cost</span><b id="q-cost">–</b></div>
+    <div class="row"><span>⛽ Gas (est.)</span><b id="q-gas">–</b></div>
+    <div class="row"><span>💲 মোট লাগবে</span><b id="q-total">–</b></div>
+    <div class="row"><span>You will receive</span><b id="q-ai">–</b></div>
+    <div class="row"><span>Sell value</span><b id="q-sell">–</b></div>
+    <div class="row"><span>Net</span><b id="q-net">–</b></div>
+  </div>
+  <div class="card">
+    <div class="row"><span>🎟 Slots left</span><b id="q-slots">–</b></div>
+    <div class="row"><span>✅ Minted</span><b id="q-minted">–</b></div>
+    <div class="row"><span>🎟 Total slots</span><b id="q-total-slots">–</b></div>
+    <div class="row"><span>👥 Referral (W1)</span><b id="q-ref">–</b></div>
+    <div class="muted" style="margin-top:6px">Sell করলে profit হবে না — BNB ফেরত পাবেন, ~$0.60 + gas কম।</div>
+  </div>
+  <div id="noslots" class="err hidden"></div>
+  <div id="wallet" class="card hidden">
+    <div class="muted">Connected wallet</div>
+    <div class="addr" id="wallet-addr">–</div>
+    <div class="muted" id="wallet-note"></div>
+  </div>
+  <button id="btn-connect">🔗 Connect Wallet</button>
+  <button id="btn-mint" disabled>✅ Confirm Mint</button>
+  <button id="btn-report" class="secondary hidden">📤 Report mint to bot</button>
+  <div id="status" class="muted"></div>
+  <div id="done" class="ok hidden"></div>
+  <div class="muted">⚠️ Your wallet needs a .ai Agent ID and enough BNB for the cost + gas. Minting from W1 itself is not allowed (self-referral).</div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+  if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+
+  var PROJECT_ID = "__WALLETCONNECT_PROJECT_ID__";
+  var MINT_CONTRACT = "__MINT_CONTRACT__";
+  var REFERRER_W1 = "__REFERRER_W1__";
+  var CHAIN_ID = parseInt("__CHAIN_ID__", 10) || 56;
+
+  var params = new URLSearchParams(location.search);
+  var qty = parseInt(params.get("qty") || "5", 10);
+  if (qty !== 5 && qty !== 10) qty = 5;
+
+  var $ = function (id) { return document.getElementById(id); };
+  var quote = null;      // latest /api/quote payload
+  var provider = null;   // WalletConnect provider
+  var account = null;    // connected address
+  var lastTx = null;     // confirmed mint tx hash
+  var reported = false;
+
+  function showError(msg) {
+    var el = $("error");
+    el.textContent = msg;
+    el.classList.remove("hidden");
+  }
+  function setStatus(msg) { $("status").textContent = msg || ""; }
+  function fmtBnb(weiStr) {
+    try { return (Number(BigInt(weiStr)) / 1e18).toFixed(5) + " BNB"; }
+    catch (e) { return "–"; }
+  }
+  function fmtAI(n) {
+    try { return Number(n).toLocaleString("en-US") + " AI"; }
+    catch (e) { return "–"; }
+  }
+
+  function renderQuote(q) {
+    $("q-qty").textContent = q.qty + " shares";
+    $("q-cost").textContent = fmtBnb(q.cost_wei_str);
+    $("q-gas").textContent = "~" + fmtBnb(q.gas_wei_str);
+    $("q-total").textContent = fmtBnb((BigInt(q.cost_wei_str) + BigInt(q.gas_wei_str)).toString());
+    $("q-ai").textContent = "~" + fmtAI(q.expected_ai);
+    $("q-sell").textContent = "~" + fmtBnb(q.sell_wei_str);
+    var net = BigInt(q.sell_wei_str) - BigInt(q.cost_wei_str);
+    $("q-net").textContent = (net < 0n ? "-" : "+") + fmtBnb((net < 0n ? -net : net).toString());
+    $("q-slots").textContent = Number(q.slots_left).toLocaleString("en-US");
+    $("q-minted").textContent = Number(q.total_minted).toLocaleString("en-US");
+    $("q-total-slots").textContent = Number(q.total_shares).toLocaleString("en-US");
+    var r = q.referral || {};
+    var lvl = (r.level === 0) ? "Level 0 (5%)" : (r.level === 1) ? "Level 1 (10%)"
+      : (r.level === 2) ? "Level 2 (15%)" : "Level –";
+    $("q-ref").textContent = lvl + " • " +
+      (r.invites == null ? "invites –" : r.invites + " invites") + " • " +
+      (r.owed_wei == null ? "owed –" : Number(r.owed_wei).toLocaleString("en-US") + " AI owed");
+    var no = $("noslots");
+    if (q.slots_left < q.qty) {
+      no.innerHTML = "❌ Slot nei — mint kora jabe na.<br>" +
+        "Referral-e ar kono slot nei — mint kora jabe na.<br>" +
+        "Tumi chaiso: " + q.qty + " shares, baki ache: " + q.slots_left + " slots.<br>" +
+        "Slot add hole abar try koro.";
+      no.classList.remove("hidden");
+      $("btn-mint").disabled = true;
+    } else {
+      no.classList.add("hidden");
+      if (account) $("btn-mint").disabled = false;
+    }
+  }
+
+  function loadQuote() {
+    return fetch("api/quote?qty=" + qty)
+      .then(function (res) { return res.json(); })
+      .then(function (q) {
+        if (!q.ok) throw new Error(q.error || "quote failed");
+        quote = q;
+        $("loading").classList.add("hidden");
+        $("quote").classList.remove("hidden");
+        renderQuote(q);
+        return q;
+      });
+  }
+
+  function connectWallet() {
+    if (!PROJECT_ID || PROJECT_ID.indexOf("__") === 0) {
+      showError("Mini app is not configured (no WalletConnect project ID). Ask the owner to configure it.");
+      return Promise.resolve(null);
+    }
+    if (typeof window.EthereumProvider === "undefined") {
+      showError("WalletConnect failed to load. Check your connection and reload the app.");
+      return Promise.resolve(null);
+    }
+    setStatus("⌛ Wallet connect হচ্ছে...");
+    return window.EthereumProvider.init({
+      projectId: PROJECT_ID,
+      chains: [CHAIN_ID],
+      showQrModal: true,
+      rpcMap: { 56: "https://bsc-dataseed1.bnbchain.org" },
+      metadata: {
+        name: "Free Mint Crypto Cravers",
+        description: "Agent ID (AI) mint — direct on-chain",
+        url: location.origin,
+        icons: []
+      }
+    }).then(function (p) {
+      provider = p;
+      return provider.connect();
+    }).then(function () {
+      return provider.request({ method: "eth_accounts", params: [] });
+    }).then(function (accounts) {
+      account = accounts && accounts[0];
+      if (!account) throw new Error("No account connected.");
+      $("wallet").classList.remove("hidden");
+      $("wallet-addr").textContent = account;
+      if (account.toLowerCase() === REFERRER_W1.toLowerCase()) {
+        $("wallet-note").textContent = "❌ This is the owner's wallet (W1) — it cannot mint with itself as referrer. Connect your own agent wallet.";
+        $("btn-mint").disabled = true;
+      } else {
+        $("wallet-note").textContent = "Agent ID থাকতে হবে — না থাকলে mint fail হবে।";
+        if (quote && quote.slots_left >= quote.qty) $("btn-mint").disabled = false;
+      }
+      $("btn-connect").textContent = "🔗 Wallet Connected ✅";
+      setStatus("");
+      return account;
+    }).catch(function (err) {
+      showError("Wallet connect failed: " + (err && err.message ? err.message : err));
+      setStatus("");
+      return null;
+    });
+  }
+
+  function waitReceipt(hash) {
+    var tries = 0;
+    return new Promise(function (resolve, reject) {
+      (function poll() {
+        tries++;
+        provider.request({ method: "eth_getTransactionReceipt", params: [hash] })
+          .then(function (rc) {
+            if (rc && rc.blockNumber) return resolve(rc);
+            if (tries > 60) return reject(new Error("Timed out waiting for the mint to confirm. Check BscScan: " + hash));
+            setTimeout(poll, 2000);
+          }).catch(function (err) {
+            if (tries > 60) return reject(err);
+            setTimeout(poll, 2000);
+          });
+      })();
+    });
+  }
+
+  function confirmMint() {
+    if (!account || !provider) { showError("Connect your wallet first."); return; }
+    if (!window.ethers) { showError("Failed to load the transaction builder. Reload the app."); return; }
+    $("btn-mint").disabled = true;
+    setStatus("⌛ Fresh quote নেওয়া হচ্ছে...");
+    // Fresh total + cost right before sending — the pool moves fast and
+    // the contract wants expectedStart == totalMinted + 1.
+    loadQuote().then(function (q) {
+      if (q.slots_left < q.qty) {
+        throw new Error("Slot nei — mint kora jabe na. (slots left: " + q.slots_left + ")");
+      }
+      var cost = BigInt(q.cost_wei_str);
+      var total = q.total_minted;
+      var deadline = Math.floor(Date.now() / 1000) + 600;
+      var iface = new window.ethers.Interface([
+        "function mint(uint256 shares, address referrer, uint256 maxCost, uint256 expectedStart, uint256 minTokens, uint256 deadline)"
+      ]);
+      var data = iface.encodeFunctionData("mint", [q.qty, REFERRER_W1, cost, total + 1, 0, deadline]);
+      setStatus("⌛ Wallet-e confirm করুন... (mint " + q.qty + " shares, " + fmtBnb(q.cost_wei_str) + ")");
+      return provider.request({
+        method: "eth_sendTransaction",
+        params: [{ from: account, to: MINT_CONTRACT,
+                   value: "0x" + cost.toString(16), data: data }]
+      });
+    }).then(function (hash) {
+      lastTx = hash;
+      setStatus("⏳ Mint confirm হচ্ছে on-chain...");
+      return waitReceipt(hash);
+    }).then(function () {
+      var box = $("done");
+      box.innerHTML = "✅ Mint সফল!<br>Tx: <a href=\"https://bscscan.com/tx/" + lastTx +
+        "\" target=\"_blank\">" + lastTx + "</a><br>" +
+        "Bot-e report পাঠানো হচ্ছে — Claim $3 এর জন্য Check status চাপুন।";
+      box.classList.remove("hidden");
+      $("btn-report").classList.remove("hidden");
+      setStatus("");
+      setTimeout(reportToBot, 3000);
+    }).catch(function (err) {
+      showError("Mint failed: " + (err && err.message ? err.message : err) + " — kichu pathano hoy nai.");
+      setStatus("");
+      if (quote && quote.slots_left >= quote.qty && account) $("btn-mint").disabled = false;
+    });
+  }
+
+  function reportToBot() {
+    if (reported || !lastTx) return;
+    reported = true;
+    if (tg && tg.sendData) {
+      try {
+        tg.sendData(JSON.stringify({ type: "mint", tx_hash: lastTx, qty: qty, address: account }));
+      } catch (e) {
+        setStatus("Bot-e report পাঠানো যায়নি — Tx hash টা bot-e পাঠান: " + lastTx);
+      }
+    } else {
+      setStatus("Telegram app-এর বাইরে খোলা — Tx hash টা bot-e পাঠান: " + lastTx);
+    }
+  }
+
+  $("btn-connect").addEventListener("click", connectWallet);
+  $("btn-mint").addEventListener("click", confirmMint);
+  $("btn-report").addEventListener("click", reportToBot);
+
+  if (typeof window.ethers === "undefined" || typeof window.EthereumProvider === "undefined") {
+    // Libraries load async from CDN; give them a moment, then load anyway.
+    setTimeout(function () {
+      if (typeof window.ethers === "undefined" || typeof window.EthereumProvider === "undefined") {
+        showError("Wallet libraries failed to load (CDN unreachable). Check your connection and reload.");
+      }
+      loadQuote().catch(function (err) { showError("Quote load failed: " + err.message); });
+    }, 1500);
+  } else {
+    loadQuote().catch(function (err) { showError("Quote load failed: " + err.message); });
+  }
+})();
+</script>
+</body>
+</html>

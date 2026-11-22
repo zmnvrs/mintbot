@@ -8,9 +8,14 @@ What it checks:
   A. /health returns 200.
   B. /start shows the admin bot's seven buttons (Connect Wallet,
      Check status, Mint Ten Share, Mint Five Share, Claim $3, Help,
-     Disconnect) as callback buttons — no Web App, no WalletConnect.
-  C. The /mint route is gone (404) and bot.py has no Web App /
-     WalletConnect / mint_page references.
+     Disconnect). Without MINI_APP_URL the Mint buttons are callback
+     buttons (baw quote fallback); with MINI_APP_URL set they are
+     Web App buttons opening the mini app (direct WalletConnect
+     mint).
+  C. The old /mint route is gone (404). bot.py has a /mint-app route
+     (the Telegram Web App mini app) and a /api/quote route; the
+     WalletConnect wiring lives in mint_app.html (never the real
+     project ID — it is injected at runtime from the env).
   D. Connect Wallet flow with mocked baw: QR image sent as a photo,
      pending QR stored, pairing code shown.
   E. Check status: pending QR verifies -> paired; expired QR -> the
@@ -57,7 +62,8 @@ def load_bot(env):
                 "CHANNEL_INVITE_URL", "OWNER_CONTACT", "ADMIN_CONTACT",
                 "REWARD_TEXT",
                 "WEBHOOK_URL", "BSC_RPC", "BAW_USERS_HOME", "W1_BAW_HOME",
-                "BAW_STATE_FILE", "BAW_BIN"):
+                "BAW_STATE_FILE", "BAW_BIN", "MINI_APP_URL",
+                "WALLETCONNECT_PROJECT_ID"):
         if key in env:
             os.environ[key] = env[key]
         else:
@@ -166,24 +172,26 @@ check("start: welcome mentions Connect Wallet + $3",
 check("start: welcome shows Owner @imzaman7",
       any("Owner: @imzaman7" in t for t in texts), str(texts))
 
-# --- C: /mint route gone, no Web App references ---------------------------
+# --- C: old /mint route gone; mini app routes exist ----------------------
 check("mint route: GET /mint returns 404",
       client.get("/mint?qty=5").status_code == 404)
 check("mint route: GET /mint?qty=10 returns 404",
       client.get("/mint?qty=10").status_code == 404)
 src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "bot.py"), encoding="utf-8").read()
-check("no webapp: bot.py has no 'web_app'",
-      "web_app" not in src)
-check("no webapp: bot.py has no 'WalletConnect'",
+check("webapp: bot.py has the /mint-app route",
+      '"/mint-app"' in src)
+check("webapp: bot.py has the /api/quote route",
+      '"/api/quote"' in src)
+check("webapp: bot.py has no 'WalletConnect' literal (only the page)",
       "WalletConnect" not in src)
-check("no webapp: bot.py has no 'mint_page'",
+check("webapp: bot.py has no 'mint_page'",
       "mint_page" not in src)
-check("no webapp: bot.py has no 'WC_PROJECT_ID'",
+check("webapp: bot.py has no 'WC_PROJECT_ID'",
       "WC_PROJECT_ID" not in src)
-check("no webapp: bot.py has no '/mint' route",
-      '"/mint"' not in src)
-check("no webapp: mint_page.py file is deleted",
+check("webapp: bot.py has no old '/mint' route handler",
+      'app.route("/mint"' not in src and "def mint(" not in src)
+check("webapp: mint_page.py file is deleted",
       not os.path.exists(os.path.join(
           os.path.dirname(os.path.abspath(__file__)), "mint_page.py")))
 
@@ -363,6 +371,9 @@ baw_users.dev_mode_enabled = lambda uid: True
 bot.bnb_price_usd = lambda: 600.0
 baw_users.paid_once = lambda addr: False
 baw_users.estimate_mint_gas_wei = lambda: 20 * 10 ** 12  # 0.00002 BNB gas
+baw_users.slots_left = lambda: 4211133  # 4,440,000 - 228,867
+baw_users.referral_stats = lambda: {"level": 1, "invites": 12,
+                                    "owed_wei": 0}
 
 # Referral: every mint from this bot must use W1 (the owner) as referrer.
 _W1_HEX = "e012133823df5452de9c10a73fe935d26b995a97"
@@ -391,6 +402,9 @@ check("mint: quote shows estimated gas + total needed",
 check("mint: quote shows expected AI + sell value",
       any("11,380,000,000,000" in t and "0.07690" in t for t in texts),
       str(texts))
+check("mint: quote shows slots left + W1 referral",
+      any("Slots: 4,211,133 left" in t and "Referral (W1)" in t
+          for t in texts), str(texts))
 check("mint: quote says sell is NOT a profit",
       any("profit হবে না" in t for t in texts), str(texts))
 btns = buttons_of(calls)
@@ -755,6 +769,229 @@ check("mint: retry calldata uses fresh expected_start + buffer",
       _retry_args[3] == 300000 + 1 + baw_users.MINT_START_BUFFER
       and _retry_args[0] == 5,
       str(_retry_args))
+
+# --- N: slots + mini app (direct WalletConnect mint) --------------------
+# N1: slots_left math (TOTAL_SHARES - totalMinted), clamped at 0.
+bot, baw_users = load_bot(BASE_ENV)
+check("slots: TOTAL_SHARES is 4,440,000",
+      baw_users.TOTAL_SHARES == 4440000, str(baw_users.TOTAL_SHARES))
+baw_users.total_minted = lambda: 228867
+baw_users.total_shares = lambda: 4440000
+check("slots: slots_left = 4,440,000 - 228,867",
+      baw_users.slots_left() == 4211133, str(baw_users.slots_left()))
+baw_users.total_minted = lambda: 4440000
+check("slots: slots_left is 0 when sold out",
+      baw_users.slots_left() == 0, str(baw_users.slots_left()))
+baw_users.total_minted = lambda: 5000000
+check("slots: slots_left never goes negative",
+      baw_users.slots_left() == 0, str(baw_users.slots_left()))
+
+# N2: referral_stats reads level / invites / owed for W1.
+from eth_abi import encode as _enc2
+
+
+def _fake_referral_call(to, data):
+    sel = data[2:10]
+    vals = {
+        baw_users._selector("levelOf(address)"): 1,
+        baw_users._selector("validInvites(address)"): 12,
+        baw_users._selector("owedOf(address)"): 123456,
+    }
+    return "0x" + _enc2(["uint256"], [vals.get(sel, 0)]).hex()
+
+
+baw_users.eth_call = _fake_referral_call
+stats = baw_users.referral_stats()
+check("referral: level/invites/owed read for W1",
+      stats == {"level": 1, "invites": 12, "owed_wei": 123456},
+      str(stats))
+
+
+def _fake_referral_call_partial(to, data):
+    if data[2:10] == baw_users._selector("owedOf(address)"):
+        raise baw_users.BawError("rpc down")
+    return _fake_referral_call(to, data)
+
+
+baw_users.eth_call = _fake_referral_call_partial
+stats = baw_users.referral_stats()
+check("referral: one failed read -> None for that field only",
+      stats == {"level": 1, "invites": 12, "owed_wei": None},
+      str(stats))
+
+# N3: quote blocks the mint when no slots are left.
+bot, baw_users = load_bot(BASE_ENV)
+calls = make_calls(bot)
+client = bot.app.test_client()
+baw_users.cost_of = lambda qty: COST_5 if qty == 5 else COST_10
+baw_users.total_minted = lambda: 4439997
+baw_users.total_shares = lambda: 4440000
+baw_users.slots_left = lambda: 3  # fewer than the 5 requested
+baw_users.referral_stats = lambda: {"level": 0, "invites": 0,
+                                    "owed_wei": 0}
+baw_users.eth_get_balance = lambda addr: 10 ** 18
+baw_users.token_balance = lambda token, addr: 0
+baw_users.estimate_ai_received = lambda cost, qty: 5690000000000
+baw_users.get_amounts_out = lambda amt, path: [amt, 38450000000000000]
+baw_users.dev_mode_enabled = lambda uid: True
+bot.bnb_price_usd = lambda: 600.0
+baw_users.paid_once = lambda addr: False
+baw_users.estimate_mint_gas_wei = lambda: 20 * 10 ** 12
+baw_users.save_record(111, {"paired_address": USER_ADDR})
+calls.clear()
+client.post("/webhook", json=callback_update(111, "mint_5"))
+texts = texts_of(calls)
+check("slots: no slots -> Bangla block message, no fund loss",
+      any("Slot nei" in t and "Referral-e ar kono slot nei" in t
+          for t in texts), str(texts))
+check("slots: no slots -> no Confirm button, no pending mint",
+      not any(b.get("callback_data") == "confirm_mint_5"
+              for b in buttons_of(calls))
+      and "pending_mint" not in baw_users.get_record(111),
+      str(buttons_of(calls)))
+
+# N4: Mint buttons are Web App buttons when MINI_APP_URL is set.
+bot, baw_users = load_bot(dict(BASE_ENV, MINI_APP_URL="https://example.onrender.com"))
+calls = make_calls(bot)
+client = bot.app.test_client()
+client.post("/webhook", json=start_update())
+btns = buttons_of(calls)
+by_label = {b.get("text"): b for b in btns}
+check("miniapp: mint buttons are Web App buttons when URL is set",
+      "web_app" in by_label.get(bot._bold("💰 Mint Ten Share"), {})
+      and "web_app" in by_label.get(bot._bold("💎 Mint Five Share"), {}),
+      str(btns))
+check("miniapp: Web App URL has the mint-app path + qty",
+      by_label.get(bot._bold("💰 Mint Ten Share"), {}).get("web_app", {}).get("url")
+      == "https://example.onrender.com/mint-app?qty=10"
+      and by_label.get(bot._bold("💎 Mint Five Share"), {}).get("web_app", {}).get("url")
+      == "https://example.onrender.com/mint-app?qty=5",
+      str(btns))
+check("miniapp: other buttons stay callback buttons",
+      by_label.get(bot._bold("🔗 Connect Wallet"), {}).get("callback_data")
+      == "connect_wallet", str(btns))
+
+# N5: /mint-app serves the page with runtime-injected config.
+bot, baw_users = load_bot(dict(BASE_ENV,
+                               WALLETCONNECT_PROJECT_ID="test-wc-project-id"))
+client = bot.app.test_client()
+resp = client.get("/mint-app")
+body = resp.get_data(as_text=True)
+check("miniapp: /mint-app is 200 with the mint contract + project ID",
+      resp.status_code == 200
+      and "0xa4bFa31f615F8e2a13dce3d93C0996CC5a56763D" in body
+      and "test-wc-project-id" in body, str(resp.status_code))
+check("miniapp: page has no unreplaced placeholder",
+      "__WALLETCONNECT_PROJECT_ID__" not in body
+      and "__MINT_CONTRACT__" not in body, str(body[:200]))
+check("miniapp: page wires WalletConnect + ethers + Telegram WebApp",
+      "ethereum-provider" in body and "ethers" in body
+      and "telegram-web-app.js" in body, str(body[:200]))
+check("miniapp: page uses W1 as the referrer, never another address",
+      "0xE012133823df5452de9c10a73fE935d26B995A97" in body,
+      str(body[:200]))
+bot, baw_users = load_bot(BASE_ENV)  # no project ID
+client = bot.app.test_client()
+resp = client.get("/mint-app")
+check("miniapp: no project ID -> 503, not a broken page",
+      resp.status_code == 503
+      and "not configured" in resp.get_data(as_text=True),
+      str(resp.status_code))
+
+# N6: /api/quote returns the live numbers + slots + referral.
+bot, baw_users = load_bot(BASE_ENV)
+client = bot.app.test_client()
+baw_users.cost_of = lambda qty: COST_5 if qty == 5 else COST_10
+baw_users.total_minted = lambda: 228867
+baw_users.total_shares = lambda: 4440000
+baw_users.estimate_mint_gas_wei = lambda: 20 * 10 ** 12
+baw_users.referral_stats = lambda: {"level": 1, "invites": 12,
+                                    "owed_wei": 0}
+baw_users.estimate_ai_received = lambda cost, qty: 5690000000000
+baw_users.get_amounts_out = lambda amt, path: [amt, 38450000000000000]
+bot.bnb_price_usd = lambda: 600.0
+resp = client.get("/api/quote?qty=5")
+q = resp.get_json()
+check("api: /api/quote?qty=5 returns slots + cost + referral",
+      resp.status_code == 200 and q.get("ok") is True
+      and q.get("qty") == 5 and q.get("slots_left") == 4211133
+      and q.get("cost_wei_str") == str(COST_5)
+      and q.get("referral", {}).get("level") == 1
+      and q.get("referrer") == "0xE012133823df5452de9c10a73fE935d26B995A97",
+      str(q))
+check("api: invalid qty -> 400",
+      client.get("/api/quote?qty=7").status_code == 400)
+check("api: no qty defaults to 5",
+      client.get("/api/quote").get_json().get("qty") == 5)
+
+# N7: web_app_data mint report -> recorded + instant sell + Claim ready.
+bot, baw_users = load_bot(BASE_ENV)
+calls = make_calls(bot)
+client = bot.app.test_client()
+sell_calls = []
+baw_users.sell_ai = lambda home, addr, amt: \
+    sell_calls.append((home, addr, amt)) or \
+    {"approve_tx": "0xapp2", "swap_tx": "0xsw2",
+     "expected_bnb_wei": 38450000000000000}
+baw_users.token_balance = lambda token, addr: 5690000000000
+baw_users.eth_get_balance = lambda addr: 10 ** 18
+bot.bnb_price_usd = lambda: 600.0
+baw_users.save_record(111, {"paired_address": USER_ADDR})
+_report = {"type": "mint", "tx_hash": "0xwebappmint",
+           "qty": 5, "address": USER_ADDR}
+
+
+def _webapp_update(uid, data, update_id=9):
+    return {"update_id": update_id,
+            "message": {"message_id": 5, "chat": {"id": uid},
+                        "from": {"id": uid},
+                        "web_app_data": {"data": json.dumps(data),
+                                         "button_text": "Mint"}}}
+
+
+calls.clear()
+client.post("/webhook", json=_webapp_update(111, _report))
+texts = texts_of(calls)
+rec = baw_users.get_record(111)
+check("webapp: mint reported -> recorded, sell ran, success shown",
+      rec.get("minted_count") == 1 and rec.get("total_shares") == 5
+      and rec.get("last_mint_tx") == "0xwebappmint"
+      and sell_calls and sell_calls[0][2] == 5690000000000
+      and any("Mint সফল" in t and "0xwebappmint" in t for t in texts),
+      str((rec, texts)))
+calls.clear()
+client.post("/webhook", json=_webapp_update(111, _report, update_id=10))
+check("webapp: same tx reported twice -> not double-counted",
+      baw_users.get_record(111).get("minted_count") == 1
+      and any("already recorded" in t for t in texts_of(calls)),
+      str(texts_of(calls)))
+# Different wallet than the paired one -> recorded, sell skipped.
+_report2 = {"type": "mint", "tx_hash": "0xotherwallet",
+            "qty": 10,
+            "address": "0x2222222222222222222222222222222222222222"}
+sell_calls.clear()
+calls.clear()
+client.post("/webhook", json=_webapp_update(111, _report2, update_id=11))
+check("webapp: mint from another wallet -> recorded, sell skipped",
+      baw_users.get_record(111).get("minted_count") == 2
+      and not sell_calls
+      and any("not the wallet paired" in t for t in texts_of(calls)),
+      str(texts_of(calls)))
+
+# N8: Check status detects an on-chain mint the bot never got told about.
+bot, baw_users = load_bot(BASE_ENV)
+calls = make_calls(bot)
+client = bot.app.test_client()
+baw_users.eth_get_balance = lambda addr: 10 ** 17
+baw_users.get_agent_id = lambda uid: (True, "testuser.ai")
+baw_users.paid_once = lambda addr: True
+baw_users.save_record(111, {"paired_address": USER_ADDR})
+calls.clear()
+client.post("/webhook", json=callback_update(111, "check_status"))
+check("status: on-chain mint detected -> minted_count recorded",
+      baw_users.get_record(111).get("minted_count") == 1
+      and baw_users.get_record(111).get("minted_onchain") is True,
+      str(baw_users.get_record(111)))
 
 print()
 if FAILURES:

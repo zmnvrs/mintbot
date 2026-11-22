@@ -10,11 +10,21 @@ wallet.
 How it works: every Telegram user gets an ISOLATED baw session (a
 separate HOME dir per Telegram user id, see baw_users.py). The bot
 never holds a private key — baw handles auth; the bot only keeps a
-qrCodeId and session state. Minting happens only on the owning user's
-explicit button tap, only from their own paired wallet, only with a
-clean baw preview (value = live mint cost exactly, no extra
-approvals). After a mint the bot immediately sells the AI just minted
-(instant reward) and reports the proceeds.
+qrCodeId and session state.
+
+Minting goes through the Telegram Web App mini app (see mint_app.html):
+the user connects their wallet there and sends the
+mint transaction DIRECTLY on-chain — no baw preview, because the baw
+preview simulation cannot simulate this mint (it fails with 351805
+for every parameter, while a direct on-chain call succeeds). The
+referrer is always W1, the owner's wallet. After a successful mint
+the mini app reports the tx hash back to the bot, which records it
+and immediately sells the AI just minted (instant reward) via baw.
+If MINI_APP_URL is not set, the Mint buttons fall back to the old
+baw quote/confirm flow (kept for when the mini app has no public
+URL yet). The mini app also shows the live mint slots (shares left)
+and the W1 referral state, and blocks the mint when no slots are
+left so nobody loses gas on a sold-out mint.
 
 Buttons (like the admin's bot): Connect Wallet, Check status,
 Mint Ten Share, Mint Five Share, Claim $3, Help, Disconnect — plus
@@ -96,6 +106,13 @@ REWARD_TEXT = os.environ.get("REWARD_TEXT", "$3 per account").strip()
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "").strip()
 BSC_RPC = os.environ.get("BSC_RPC", "https://bsc-dataseed.bnbchain.org").strip()
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+# Public base URL the mini app is served from, e.g.
+# https://mintbot-xxxx.onrender.com. When set, the Mint buttons open
+# the Telegram Web App mini app (direct wallet mint). When
+# unset, the Mint buttons fall back to the baw quote/confirm flow.
+# The wallet-connect project ID lives in WALLETCONNECT_PROJECT_ID (in
+# .env, never committed); the /mint-app route injects it at runtime.
+MINI_APP_URL = os.environ.get("MINI_APP_URL", "").strip()
 
 TELEGRAM_API = "https://api.telegram.org/bot{}".format(BOT_TOKEN)
 BINANCE_TICKER = "https://api.binance.com/api/v3/ticker/price"
@@ -190,6 +207,22 @@ def _bold(text):
 # in the project notes if they are ever needed again.
 
 
+def _mint_button(qty):
+    """The Mint button for qty shares.
+
+    When MINI_APP_URL is set it opens the Telegram Web App mini app
+    (direct wallet mint, no baw preview). Otherwise it is a
+    plain callback button for the baw quote/confirm fallback flow.
+    """
+    label = "💰 Mint Ten Share" if qty == 10 else "💎 Mint Five Share"
+    if MINI_APP_URL:
+        url = "{}mint-app?qty={}".format(
+            MINI_APP_URL.rstrip("/") + "/", qty)
+        return {"text": _bold(label), "web_app": {"url": url}}
+    return {"text": _bold(label),
+            "callback_data": "mint_{}".format(qty)}
+
+
 def main_keyboard():
     """Inline keyboard — the admin bot's seven buttons, then the rest.
 
@@ -200,8 +233,7 @@ def main_keyboard():
     rows = [
         [{"text": _bold("🔗 Connect Wallet"), "callback_data": "connect_wallet"},
          {"text": _bold("✅ Check status"), "callback_data": "check_status"}],
-        [{"text": _bold("💰 Mint Ten Share"), "callback_data": "mint_10"},
-         {"text": _bold("💎 Mint Five Share"), "callback_data": "mint_5"}],
+        [_mint_button(10), _mint_button(5)],
         [{"text": _bold("🎁 Claim $3"), "callback_data": "claim_3"}],
         [{"text": _bold("❓ Help"), "callback_data": "help"},
          {"text": _bold("🚫 Disconnect"), "callback_data": "disconnect"}],
@@ -243,8 +275,10 @@ def welcome_text():
         "✨ <b>How it works:</b>\n"
         "1️⃣ 🔗 <b>Connect Wallet</b> — scan the Binance QR in the app to "
         "pair your agent wallet.\n"
-        "2️⃣ 💰 <b>Mint Five Share</b> or <b>Mint Ten Share</b> — mint from "
-        "your paired wallet. The referral goes to the owner.\n"
+        "2️⃣ 💰 <b>Mint Five Share</b> or <b>Mint Ten Share</b> — the "
+        "mint app opens: connect your wallet there and confirm. The "
+        "mint goes direct on-chain (2-3 seconds) and the referral "
+        "goes to the owner.\n"
         "3️⃣ 🎁 <b>Claim $3</b> — after your first mint through the bot, "
         "one claim per account.\n\n"
         "⚠️ You need a .ai Agent ID in your wallet and enough BNB for the "
@@ -266,12 +300,14 @@ def help_text():
         "2️⃣ ✅ <b>Check status</b> — shows your paired wallet address, "
         "BNB balance, Agent ID status and mint status. Press it after "
         "scanning the QR to finish pairing.\n\n"
-        "3️⃣ 💰 <b>Mint Five Share</b> / <b>Mint Ten Share</b> — mints "
-        "Agent ID (AI) shares from your paired wallet. I show the live "
-        "cost first — you confirm before anything is sent. After the "
-        "mint I immediately sell the AI you received and report what "
-        "you got back (the sell is not a profit — it gets your BNB "
-        "back, minus about $0.60 + gas).\n\n"
+        "3️⃣ 💰 <b>Mint Five Share</b> / <b>Mint Ten Share</b> — the "
+        "mint app opens and shows the live cost, the slots left and "
+        "the referral. Connect your wallet in the app and confirm — "
+        "the mint goes direct on-chain (2-3 seconds). After the mint "
+        "I immediately sell the AI you received and report what you "
+        "got back (the sell is not a profit — it gets your BNB back, "
+        "minus about $0.60 + gas). If no slots are left the app "
+        "blocks the mint so you lose no gas.\n\n"
         "4️⃣ 🎁 <b>Claim $3</b> — after your first mint through the bot, "
         "one $3 USDT claim per account.\n\n"
         "5️⃣ 🚫 <b>Disconnect</b> — unpairs your wallet from the bot.\n\n"
@@ -541,6 +577,17 @@ def handle_status(chat_id, user_id):
                      main_keyboard())
         return
     if record.get("paired_address"):
+        # On-chain fallback: if the wallet minted (e.g. via the mini
+        # app) but the bot never got the report, paidOnce proves it.
+        # Record it once so Claim $3 unlocks; never double-count.
+        if not record.get("minted_count"):
+            try:
+                if baw_users.paid_once(record["paired_address"]):
+                    record["minted_count"] = 1
+                    record["minted_onchain"] = True
+                    _save_record(user_id, record)
+            except BawError:
+                pass
         send_message(chat_id,
                      "\n".join(_paired_status_lines(user_id, record)),
                      main_keyboard())
@@ -571,6 +618,33 @@ def _fmt_bnb(wei):
     return "{:.5f}".format(wei / 1e18)
 
 
+def _referral_line(ref):
+    """One-line W1 referral summary for the quote / slots messages.
+
+    ref is baw_users.referral_stats(): level, invites, owed_wei
+    (each may be None when its chain read failed).
+    """
+    level = ref.get("level")
+    invites = ref.get("invites")
+    owed = ref.get("owed_wei")
+    level_txt = ("Level {} ({}%)".format(level, {0: 5, 1: 10, 2: 15}.get(level, 5))
+                 if level is not None else "Level —")
+    invites_txt = ("{} invites".format(invites)
+                   if invites is not None else "invites —")
+    owed_txt = ("{:,} AI owed".format(owed)
+                if owed is not None else "owed —")
+    return "👥 Referral (W1): {} • {} • {}".format(
+        level_txt, invites_txt, owed_txt)
+
+
+def _slots_lines(total_shares, total_minted, slots):
+    """Slots lines shared by the quote and the no-slots message."""
+    if slots is None:
+        return "🎟 Slots: — (could not read right now)"
+    return ("🎟 Slots: {:,} left / {:,} total (minted {:,})".format(
+        slots, total_shares, total_minted))
+
+
 def handle_mint_quote(chat_id, user_id, qty):
     """Show the live numbers for a mint and ask the user to confirm.
 
@@ -595,7 +669,7 @@ def handle_mint_quote(chat_id, user_id, qty):
     try:
         # The independent chain reads run in parallel — one after another
         # they took seconds each and the quote felt very slow.
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        with ThreadPoolExecutor(max_workers=8) as pool:
             fut_cost = pool.submit(baw_users.cost_of, qty)
             fut_total = pool.submit(baw_users.total_minted)
             fut_bnb = pool.submit(baw_users.eth_get_balance, address)
@@ -604,12 +678,24 @@ def handle_mint_quote(chat_id, user_id, qty):
             fut_usdt = pool.submit(baw_users.token_balance,
                                    baw_users.USDT_TOKEN, address)
             fut_gas = pool.submit(baw_users.estimate_mint_gas_wei)
+            fut_slots = pool.submit(baw_users.slots_left)
+            fut_ref = pool.submit(baw_users.referral_stats)
             cost_wei = fut_cost.result()
             total = fut_total.result()
             bnb_wei = fut_bnb.result()
             ai_before = fut_ai.result()
             usdt_wei = fut_usdt.result()
             gas_wei = fut_gas.result()
+            # Slots + referral must never kill the quote: if their
+            # reads fail, show them as unavailable and do not block.
+            try:
+                slots = fut_slots.result()
+            except BawError:
+                slots = None
+            try:
+                ref = fut_ref.result()
+            except BawError:
+                ref = {"level": None, "invites": None, "owed_wei": None}
         expected_ai = baw_users.estimate_ai_received(cost_wei, qty)
         amounts = baw_users.get_amounts_out(
             expected_ai, [baw_users.AI_TOKEN, baw_users.WBNB_TOKEN])
@@ -620,6 +706,26 @@ def handle_mint_quote(chat_id, user_id, qty):
                      "Could not read the live mint numbers ({}).\n"
                      "Please try again in a bit.".format(exc),
                      main_keyboard())
+        return
+    total_shares = baw_users.TOTAL_SHARES
+    minted = total  # totalMinted == total_shares - slots
+    ref_line = _referral_line(ref)
+    if slots is not None and slots < qty:
+        # No slots left — block the mint so nobody loses gas/funds on
+        # a sold-out mint. Slots come back only if the project adds
+        # more; until then the mint stays blocked.
+        send_message(
+            chat_id,
+            "❌ Slot nei — mint kora jabe na.\n\n"
+            "Referral-e ar kono slot nei — mint kora jabe na.\n"
+            "Tumi chaiso: {} shares, baki ache: {} slots.\n\n"
+            "🎟 Total slots: {:,}\n"
+            "✅ Mint hoyeche: {:,}\n"
+            "🎟 Baki slots: {:,}\n"
+            "{}\n\n"
+            "Slot add hole abar Mint চাপুন।".format(
+                qty, slots, total_shares, minted, slots, ref_line),
+            main_keyboard())
         return
     cap_wei = qty * baw_users.MAX_COST_PER_SHARE_WEI
     if cost_wei > cap_wei:
@@ -688,6 +794,8 @@ def handle_mint_quote(chat_id, user_id, qty):
         "You will receive: ~{:,} AI\n"
         "Sell value: ~{} BNB\n"
         "Net: about {} BNB + gas\n\n"
+        "{}\n"
+        "{}\n\n"
         "Sell করলে profit হবে না — BNB ফেরত পাবেন, ~$0.60 + gas কম।\n\n"
         "Wallet: <code>{}</code>\n"
         "Your BNB: {} BNB\n\n"
@@ -696,6 +804,7 @@ def handle_mint_quote(chat_id, user_id, qty):
             _fmt_bnb(gas_wei), _fmt_bnb(total_needed_wei),
             expected_ai, _fmt_bnb(sell_wei),
             ("-" if net_wei < 0 else "+") + _fmt_bnb(abs(net_wei)),
+            _slots_lines(total_shares, minted, slots), ref_line,
             address, _fmt_bnb(bnb_wei)),
         keyboard)
 
@@ -803,6 +912,116 @@ def handle_mint_confirm(chat_id, user_id, qty):
         "Claim $3 চাপুন — আপনার one-time reward নিন।".format(
             qty, record["total_shares"], mint_tx,
             BSCSCAN_TX.format(mint_tx), "\n".join(sell_lines)),
+        main_keyboard())
+
+
+def handle_web_app_data(chat_id, user_id, data):
+    """Record a mint the mini app reports (direct wallet mint).
+
+    data is the JSON string the mini app sent via Telegram.WebApp
+    .sendData: {"type": "mint", "tx_hash": "0x...", "qty": 5,
+    "address": "0x..."}. Records minted_count/total_shares (once per
+    tx hash, so a re-sent report never double-counts), then runs the
+    instant sell via baw when the reported wallet is the paired
+    wallet (the baw session can only sell from the paired wallet).
+    Enables Claim $3, exactly like a baw mint.
+    """
+    try:
+        payload = json.loads(data)
+    except (ValueError, TypeError):
+        send_message(chat_id,
+                     "Could not read the mint report from the app.\n"
+                     "Tap Check status — if the mint is on-chain I will "
+                     "record it there.",
+                     main_keyboard())
+        return
+    if not isinstance(payload, dict) or payload.get("type") != "mint":
+        return
+    tx_hash = payload.get("tx_hash") or ""
+    address = payload.get("address") or ""
+    if not isinstance(tx_hash, str) or not tx_hash.startswith("0x"):
+        send_message(chat_id,
+                     "The app did not send a valid mint tx hash.\n"
+                     "Tap Check status to verify the mint on-chain.",
+                     main_keyboard())
+        return
+    try:
+        qty = int(payload.get("qty"))
+    except (TypeError, ValueError):
+        qty = 0
+    if qty not in (5, 10):
+        qty = 0
+    if not isinstance(address, str) or not ADDR_RE.match(address):
+        address = ""
+    record = _get_record(user_id)
+    if record.get("last_mint_tx") == tx_hash:
+        # Already recorded (the app re-sent) — do not double-count.
+        send_message(chat_id,
+                     "Mint already recorded ✅\nTx: {}\n{}".format(
+                         tx_hash, BSCSCAN_TX.format(tx_hash)),
+                     main_keyboard())
+        return
+    paired = record.get("paired_address") or ""
+    record["minted_count"] = int(record.get("minted_count", 0)) + 1
+    record["total_shares"] = int(record.get("total_shares", 0)) + qty
+    record["last_mint_tx"] = tx_hash
+    record["first_mint_at"] = record.get("first_mint_at") or int(time.time())
+    if address:
+        record["last_mint_address"] = address
+    _save_record(user_id, record)
+    # Instant sell via baw — only possible from the paired wallet.
+    sell_lines = []
+    if address and paired and address.lower() != paired.lower():
+        sell_lines.append(
+            "Mint wallet ({}) is not the wallet paired with the bot "
+            "({}). The instant sell needs the paired wallet — your AI "
+            "stays in your wallet, sell it later from there.".format(
+                address, paired))
+    elif not paired:
+        sell_lines.append(
+            "No wallet is paired with the bot, so the instant sell "
+            "could not run. Your AI stays in your wallet — pair it "
+            "with Connect Wallet, then sell from there.")
+    else:
+        home = baw_users.user_home(user_id)
+        try:
+            ai_balance = baw_users.token_balance(baw_users.AI_TOKEN, paired)
+            bnb_before = baw_users.eth_get_balance(paired)
+            if ai_balance <= 0:
+                sell_lines.append(
+                    "No AI in the paired wallet to sell yet — it may "
+                    "still be confirming. Check status in a bit.")
+            else:
+                sell = baw_users.sell_ai(home, paired, ai_balance)
+                bnb_after = baw_users.eth_get_balance(paired)
+                got_back = bnb_after - bnb_before
+                try:
+                    sell_usd = got_back / 1e18 * bnb_price_usd()
+                    sell_usd_txt = " (${:.2f})".format(sell_usd)
+                except Exception:
+                    sell_usd_txt = ""
+                sell_lines.append(
+                    "💰 Sell সফল!\n"
+                    "AI বিক্রি: {:,}\n"
+                    "BNB ফেরত: {} BNB{}\n"
+                    "Sell Tx: {}\n"
+                    "{}".format(
+                        ai_balance, _fmt_bnb(got_back), sell_usd_txt,
+                        sell["swap_tx"], BSCSCAN_TX.format(sell["swap_tx"])))
+        except BawError as exc:
+            sell_lines.append(
+                "Sell failed: {} — your AI stays in your wallet. "
+                "You can sell it later from your wallet.".format(exc))
+    send_message(
+        chat_id,
+        "✅ Mint সফল!\n\n"
+        "Shares: {} (মোট আপনার: {})\n"
+        "Tx: {}\n"
+        "{}\n\n"
+        "{}\n\n"
+        "Claim $3 চাপুন — আপনার one-time reward নিন।".format(
+            qty, record["total_shares"], tx_hash,
+            BSCSCAN_TX.format(tx_hash), "\n".join(sell_lines)),
         main_keyboard())
 
 
@@ -984,6 +1203,13 @@ def handle_message(msg):
     text = (msg.get("text") or "").strip()
     first_name = (msg.get("from") or {}).get("first_name", "")
 
+    # The mini app reports a successful direct mint back to the bot.
+    web_app_data = msg.get("web_app_data") or {}
+    if web_app_data.get("data"):
+        handle_web_app_data(chat_id, msg.get("from", {}).get("id"),
+                            web_app_data["data"])
+        return
+
     if text.startswith("/start"):
         handle_start(chat_id, first_name)
         return
@@ -1051,6 +1277,104 @@ def health():
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({"status": "ok", "service": "mintbot"})
+
+
+@app.route("/mint-app", methods=["GET"])
+def mint_app():
+    """Serve the Telegram Web App mini app (direct wallet mint).
+
+    The HTML file holds only placeholders — the wallet-connect project
+    ID and the contract addresses are injected here at runtime from
+    the environment / baw_users, so no secret is ever committed in
+    the page. Without a project ID the page cannot connect a wallet,
+    so it answers with a plain error page instead.
+    """
+    project_id = os.environ.get("WALLETCONNECT_PROJECT_ID", "").strip()
+    if not project_id:
+        return ("<h3>Mini app is not configured</h3>"
+                "<p>The owner has not set the wallet-connect project ID "
+                "yet. Please use the Mint buttons in the bot, or ask "
+                "the owner to configure it.</p>"), 503
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "mint_app.html")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            html = fh.read()
+    except OSError:
+        return ("<h3>Mini app is missing</h3>"
+                "<p>mint_app.html was not found on the server.</p>"), 500
+    html = (html
+            .replace("__WALLETCONNECT_PROJECT_ID__", project_id)
+            .replace("__MINT_CONTRACT__", baw_users.MINT_CONTRACT)
+            .replace("__REFERRER_W1__", baw_users.REFERRER_W1)
+            .replace("__AI_TOKEN__", baw_users.AI_TOKEN)
+            .replace("__WBNB_TOKEN__", baw_users.WBNB_TOKEN)
+            .replace("__PANCAKE_ROUTER__", baw_users.PANCAKE_ROUTER)
+            .replace("__CHAIN_ID__", str(baw_users.CHAIN_ID)))
+    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
+@app.route("/api/quote", methods=["GET"])
+def api_quote():
+    """Live mint quote as JSON for the mini app.
+
+    ?qty=5|10. Returns cost, gas, expected AI, sell value, the mint
+    slots (total / minted / left) and the W1 referral state, so the
+    mini app can show them and block the mint when no slots are left.
+    """
+    try:
+        qty = int(request.args.get("qty", "5"))
+    except (TypeError, ValueError):
+        qty = 0
+    if qty not in (5, 10):
+        return jsonify({"ok": False,
+                        "error": "qty must be 5 or 10"}), 400
+    try:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            fut_cost = pool.submit(baw_users.cost_of, qty)
+            fut_total = pool.submit(baw_users.total_minted)
+            fut_shares = pool.submit(baw_users.total_shares)
+            fut_gas = pool.submit(baw_users.estimate_mint_gas_wei)
+            fut_ref = pool.submit(baw_users.referral_stats)
+            cost_wei = fut_cost.result()
+            total = fut_total.result()
+            total_shares = fut_shares.result()
+            gas_wei = fut_gas.result()
+            ref = fut_ref.result()
+        expected_ai = baw_users.estimate_ai_received(cost_wei, qty)
+        amounts = baw_users.get_amounts_out(
+            expected_ai, [baw_users.AI_TOKEN, baw_users.WBNB_TOKEN])
+        sell_wei = amounts[1]
+        try:
+            price = bnb_price_usd()
+        except Exception:
+            price = None
+    except BawError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 503
+    slots = max(0, total_shares - total)
+    return jsonify({
+        "ok": True,
+        "qty": qty,
+        "cost_wei": cost_wei,
+        "cost_wei_str": str(cost_wei),
+        "cost_bnb": cost_wei / 1e18,
+        "gas_wei": gas_wei,
+        "gas_wei_str": str(gas_wei),
+        "gas_bnb": gas_wei / 1e18,
+        "expected_ai": expected_ai,
+        "expected_ai_str": str(expected_ai),
+        "sell_wei": sell_wei,
+        "sell_wei_str": str(sell_wei),
+        "sell_bnb": sell_wei / 1e18,
+        "total_minted": total,
+        "total_shares": total_shares,
+        "slots_left": slots,
+        "referral": ref,
+        "bnb_price_usd": price,
+        "referrer": baw_users.REFERRER_W1,
+        "mint_contract": baw_users.MINT_CONTRACT,
+        "chain_id": baw_users.CHAIN_ID,
+    })
 
 
 @app.route("/setwebhook", methods=["GET"])

@@ -415,6 +415,53 @@ def total_minted():
     return decode(["uint256"], bytes.fromhex(raw[2:]))[0]
 
 
+# Total Agent ID shares ever mintable (verified on-chain via
+# TOTAL_SHARES()). The mint's "slots" are shares: slots left =
+# TOTAL_SHARES - totalMinted.
+TOTAL_SHARES = 4440000
+
+
+def total_shares():
+    """Live TOTAL_SHARES() read; falls back to the verified constant."""
+    try:
+        raw = eth_call(MINT_CONTRACT,
+                       _calldata("TOTAL_SHARES()", [], []))
+        return decode(["uint256"], bytes.fromhex(raw[2:]))[0]
+    except BawError:
+        return TOTAL_SHARES
+
+
+def slots_left():
+    """Mint slots still available (shares left to mint)."""
+    return max(0, total_shares() - total_minted())
+
+
+def _call_uint(fn_sig, address):
+    """One address->uint256 contract read (levelOf / owedOf / ...)."""
+    raw = eth_call(MINT_CONTRACT,
+                   _calldata(fn_sig, ["address"], [address]))
+    return decode(["uint256"], bytes.fromhex(raw[2:]))[0]
+
+
+def referral_stats(address=W1_ADDRESS):
+    """W1's referral state: level, valid invite count, owed bonus.
+
+    Levels: 0 = base 5%, 1 = silver 10% (10 invites), 2 = gold 15%
+    (100 invites). owedOf is the bonus (in AI wei) accrued and waiting
+    to be claimed via claimOwed(). A failed read yields None for that
+    field instead of failing the whole quote.
+    """
+    stats = {"level": None, "invites": None, "owed_wei": None}
+    for key, sig in (("level", "levelOf(address)"),
+                     ("invites", "validInvites(address)"),
+                     ("owed_wei", "owedOf(address)")):
+        try:
+            stats[key] = _call_uint(sig, address)
+        except BawError:
+            stats[key] = None
+    return stats
+
+
 def paid_once(address):
     raw = eth_call(MINT_CONTRACT,
                    _calldata("paidOnce(address)", ["address"], [address]))

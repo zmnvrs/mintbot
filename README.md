@@ -46,13 +46,48 @@ allowed). Per mint: `mint(qty, W1, maxCost, totalMinted+1, 0,
 now+600)` with `value = maxCost` (live `costOf(qty)` exactly). If
 `costOf(10)` is above 0.08 BNB (0.008 BNB/share cap) the bot stops.
 
+**The mint goes through the Telegram Web App mini app
+(`mint_app.html`, served at `/mint-app`):** the user connects their
+wallet there via WalletConnect and sends the mint transaction
+DIRECTLY on-chain (2–3 seconds). The `baw` preview path is NOT
+used for the mint, because the baw preview simulation cannot
+simulate this mint — it fails with 351805 for every parameter,
+while a direct on-chain call succeeds. The mini app reports the
+mint back to the bot (Telegram WebApp `sendData` with the tx hash),
+the bot records it and immediately sells the AI via `baw` (the
+sell is a simple approve+swap, which the preview handles fine).
+When `MINI_APP_URL` is not set, the Mint buttons fall back to the
+old `baw` quote/confirm flow (kept so the bot still works before
+the mini app has a public URL).
+
+**Slots:** the mint has 4,440,000 total shares (`TOTAL_SHARES()`).
+The quote (in the bot and in the mini app) shows slots left
+(`TOTAL_SHARES - totalMinted`) and the W1 referral state (level,
+valid invites, owed bonus). If the slots left are fewer than the
+requested shares, the mint is blocked with a plain message
+("Referral-e ar kono slot nei — mint kora jabe na") so nobody
+loses gas on a sold-out mint.
+
+**Hosting the mini app:** Telegram Web Apps need a public HTTPS
+URL. Deploy this repo to Render (the `render.yaml` web service
+serves the Flask app, including `/mint-app` and `/api/quote`),
+then set `MINI_APP_URL` in the bot's `.env` to that public URL
+(e.g. `https://mintbot-xxxx.onrender.com`) and restart the bot.
+The Render service only serves the page and the quote API — the
+bot itself keeps running on the owner's machine in polling mode,
+where the per-user `baw` sessions and the W1 session live (claims
+and the instant sell run there). Set `WALLETCONNECT_PROJECT_ID`
+(from https://cloud.walletconnect.com) in the Render dashboard
+and in the bot's `.env`; it is injected into the page at runtime
+and is never committed.
+
 Before minting the bot checks: the wallet is paired, it holds a .ai
-Agent ID (the contract reverts without one — the preview catches
-it), it has enough BNB for the cost + gas, and Developer Mode is ON
+Agent ID (the contract reverts without one), it has enough BNB for
+the cost + gas, and Developer Mode is ON
 in the Binance app (Agentic Wallet → Settings → Developer Mode —
 `baw` contract calls need it). Any failed check stops the mint and
-the bot says why, plainly. Nothing is ever sent without a clean
-preview.
+the bot says why, plainly. Nothing is ever sent without the user
+confirming in their own wallet.
 
 **Live economics (verified on-chain, 2026-11-22):** a 10-share mint
 costs 0.078 BNB and the minter receives ~11.38B AI (the BNB paid
