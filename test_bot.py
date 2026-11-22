@@ -750,6 +750,10 @@ def _preview_fail_once(home, from_addr, to, value_wei, input_data,
 baw_users.preview = _preview_fail_once
 baw_users.total_minted = lambda: 300000  # fresh total at retry time
 baw_users.cost_of = lambda qty: 39 * 10 ** 15  # fresh cost at retry time
+# do_mint now runs a direct eth_call simulation before the preview;
+# stub it to pass (the fake "0xUser" address is not a real RPC arg).
+_real_simulate = baw_users.simulate_mint
+baw_users.simulate_mint = lambda *a, **k: (True, "")
 baw_users.execute = lambda home, req_id: {"tx_hash": "0xfreshmint",
                                           "status": "OK"}
 try:
@@ -759,13 +763,14 @@ finally:
     baw_users.preview = _real_preview
     baw_users.total_minted = _real_total
     baw_users.cost_of = _real_cost
+    baw_users.simulate_mint = _real_simulate
     baw_users.execute = _real_execute
 check("mint: stale start -> do_mint retries once and succeeds",
       _res.get("tx_hash") == "0xfreshmint" and len(_preview_calls) == 2,
       str(_preview_calls))
 # The retry calldata must encode the fresh start EXACTLY (300000 + 1,
-# no ahead buffer), maxCost = fresh cost + 1% (buffer, for instant
-# first-try preview), and the preview value as the same buffered cost.
+# no ahead buffer), maxCost = fresh cost exactly (no padding, per the
+# official mint rules), and the preview value as the same exact cost.
 from eth_abi import decode as _dec
 _retry_value, _retry_data = _preview_calls[1]
 _retry_args = _dec(["uint256", "address", "uint256", "uint256",
@@ -775,8 +780,8 @@ check("mint: retry calldata uses fresh expected_start (no buffer)",
       _retry_args[3] == 300000 + 1
       and _retry_args[0] == 5,
       str(_retry_args))
-check("mint: retry maxCost is fresh cost + 0.5% (calldata only), value is exact fresh cost",
-      _retry_args[2] == (39 * 10 ** 15) * 10050 // 10000
+check("mint: retry maxCost == value == exact fresh cost (no padding)",
+      _retry_args[2] == (39 * 10 ** 15)
       and _retry_value == (39 * 10 ** 15),
       str((_retry_args[2], _retry_value)))
 

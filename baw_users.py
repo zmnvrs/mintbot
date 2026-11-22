@@ -600,7 +600,7 @@ def mint_calldata(qty, max_cost_wei, expected_start, deadline):
 
 
 # Preview attempts per mint (each with a fresh total + cost read).
-MINT_PREVIEW_ATTEMPTS = 4
+MINT_PREVIEW_ATTEMPTS = 8
 # maxCost headroom over the live costOf, in basis points (0.5%): the
 # price rises while many people mint, so an exact maxCost can be too
 # low by the time the slow (~5s) baw preview simulates. But a big
@@ -609,27 +609,60 @@ MINT_PREVIEW_ATTEMPTS = 4
 # balance for a 0.0396 BNB mint (baw 351805 "insufficient native
 # token balance"). 0.5% is enough for the preview window and stays
 # under a tight balance. (2026-11-22: tight-balance fix.)
-MINT_MAX_COST_BPS = 50
+MINT_MAX_COST_BPS = 0  # official rule: value == maxCost == live costOf
+
+
+class NoAgentError(BawError):
+    """The minting wallet has no .ai Agent ID (contract: NoAgent)."""
+
+
+def simulate_mint(from_addr, qty, cost_wei, start):
+    """Direct eth_call of the mint FROM the user's wallet, on a public
+    BSC RPC. Returns (ok, reason). This shows the real revert reason
+    that baw hides behind "simulation error". Nothing is sent."""
+    data = mint_calldata(qty, cost_wei, start, int(time.time()) + 600)
+    tx = {"from": from_addr, "to": MINT_CONTRACT,
+          "value": hex(cost_wei), "data": data}
+    known = {
+        "0x" + _selector("NoAgent()"): "NoAgent",
+        "0x" + _selector("BadStart()"): "BadStart",
+    }
+    last = "no endpoint answered"
+    for url in [BSC_RPC] + [u for u in BSC_RPC_FALLBACKS if u != BSC_RPC]:
+        try:
+            res = requests.post(
+                url, json={"jsonrpc": "2.0", "method": "eth_call",
+                           "params": [tx, "latest"], "id": 1},
+                timeout=15, headers={"User-Agent": "Mozilla/5.0"}).json()
+        except Exception as exc:
+            last = "{}: {}".format(url, exc)
+            continue
+        if "result" in res:
+            return True, ""
+        err = res.get("error")
+        if isinstance(err, dict):
+            if err.get("code") in (-32005, -32001, -32003, -32012):
+                last = "{}: rate limited".format(url)
+                continue
+            raw = err.get("data")
+            raw = raw if isinstance(raw, str) else ""
+            name = known.get(raw[:10].lower())
+            return False, "{} (revert data: {}, msg: {})".format(
+                name or "unknown revert", raw[:74] or "none",
+                err.get("message"))
+        last = "{}: {}".format(url, str(res)[:200])
+    return None, last  # could not simulate; do not block
 
 
 def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
     """Preview + execute one mint. Returns {"tx_hash", "status"}.
 
-    FIX (2026-11-22):
-      * msg.value is now the LIVE cost (costOf), NOT the padded maxCost.
-        The 0.5% padding goes only into the maxCost calldata argument
-        (slippage guard). Sending the padded amount as value made the
-        call revert when the contract wants value == cost, and it also
-        pushed tight balances over the edge.
-      * Preview AND execute are inside one retry loop. baw simulates
-        again at execute time; if another user minted in between,
-        expected_start (totalMinted + 1) is stale and the contract
-        reverts. Each retry re-reads totalMinted + costOf fresh.
-      * Retrying is only done when nothing could have been broadcast:
-        preview errors, or an execute error that is explicitly a
-        simulation failure (351805). Any other execute error is raised
-        immediately so a mint can never be sent twice.
-      * Errors say WHICH stage failed (read / preview / execute).
+    Follows the official mint rules: maxCost = live costOf(qty),
+    value == maxCost exactly, expectedStart = totalMinted + 1,
+    minTokens = 0, deadline = now + 600, referrer = W1. Every attempt
+    first runs a direct eth_call from the user's wallet to get the REAL
+    revert reason (NoAgent / BadStart). NoAgent stops immediately —
+    retrying can never fix it. Retries only when nothing was broadcast.
     """
     last_err = None
     for attempt in range(1, MINT_PREVIEW_ATTEMPTS + 1):
@@ -642,11 +675,22 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
                                "not minting".format(fresh_cost))
             max_cost = fresh_cost * (10000 + MINT_MAX_COST_BPS) // 10000
             start = fresh_total + 1
+
+            stage = "simulate"
+            ok, why = simulate_mint(from_addr, qty, max_cost, start)
+            if ok is False:
+                if why.startswith("NoAgent"):
+                    raise NoAgentError(
+                        "NoAgent: this wallet has no .ai Agent ID "
+                        "(SPACE ID). Claim one first, then mint. "
+                        "[{}]".format(why))
+                raise BawError("direct simulation reverted: " + why)
+
             deadline = int(time.time()) + 600
             data = mint_calldata(qty, max_cost, start, deadline)
 
             stage = "preview"
-            prev = preview(home, from_addr, MINT_CONTRACT, fresh_cost, data)
+            prev = preview(home, from_addr, MINT_CONTRACT, max_cost, data)
             if not preview_is_clean(prev):
                 raise BawError("mint preview not clean (status: {}). "
                                "Not minting.".format(
@@ -654,18 +698,18 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
 
             stage = "execute"
             result = execute(home, prev["request_id"])
+        except NoAgentError:
+            raise
         except BawError as exc:
             msg = str(exc)
             last_err = "[{} stage, attempt {}/{}] {}".format(
                 stage, attempt, MINT_PREVIEW_ATTEMPTS, msg)
-            # A "simulation" failure means baw refused before signing,
-            # so nothing was broadcast and a retry cannot double-mint.
             low = msg.lower()
-            safe_to_retry = (stage in ("read", "preview")
+            safe_to_retry = (stage in ("read", "simulate", "preview")
                              or "351805" in msg or "953401" in msg
                              or "simulation" in low)
             if safe_to_retry and attempt < MINT_PREVIEW_ATTEMPTS:
-                time.sleep(1)
+                time.sleep(2)
                 continue
             raise BawError(last_err)
         if not result.get("tx_hash"):
