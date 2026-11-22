@@ -678,6 +678,8 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
 
             stage = "simulate"
             ok, why = simulate_mint(from_addr, qty, max_cost, start)
+            sim_note = {True: "direct sim OK", False: "direct sim reverted",
+                        None: "direct sim unavailable"}[ok]
             if ok is False:
                 if why.startswith("NoAgent"):
                     raise NoAgentError(
@@ -690,7 +692,12 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
             data = mint_calldata(qty, max_cost, start, deadline)
 
             stage = "preview"
-            prev = preview(home, from_addr, MINT_CONTRACT, max_cost, data)
+            # baw can under-estimate gas for this mint, which shows up
+            # as "execution reverted". Alternate: baw's own estimate on
+            # odd attempts, an explicit generous gas limit on even ones.
+            gas_limit = 600000 if attempt % 2 == 0 else None
+            prev = preview(home, from_addr, MINT_CONTRACT, max_cost, data,
+                           gas_limit=gas_limit)
             if not preview_is_clean(prev):
                 raise BawError("mint preview not clean (status: {}). "
                                "Not minting.".format(
@@ -702,8 +709,10 @@ def do_mint(home, from_addr, qty, max_cost_wei, expected_start):
             raise
         except BawError as exc:
             msg = str(exc)
-            last_err = "[{} stage, attempt {}/{}] {}".format(
-                stage, attempt, MINT_PREVIEW_ATTEMPTS, msg)
+            last_err = "[{} stage, attempt {}/{}, {}, gasLimit {}] {}".format(
+                stage, attempt, MINT_PREVIEW_ATTEMPTS,
+                locals().get("sim_note", "no sim"),
+                "600000" if attempt % 2 == 0 else "auto", msg)
             low = msg.lower()
             safe_to_retry = (stage in ("read", "simulate", "preview")
                              or "351805" in msg or "953401" in msg
